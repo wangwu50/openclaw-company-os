@@ -22,6 +22,7 @@
 
 - [OpenClaw](https://openclaw.ai) 已安装并配置好 Anthropic API Key
 - OpenClaw 版本 `>= 2026.3.14`
+- Node.js `>= 22`（使用内置 `node:sqlite`，无需额外编译）
 
 ### 安装步骤
 
