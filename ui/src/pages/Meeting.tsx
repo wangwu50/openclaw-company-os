@@ -59,8 +59,9 @@ export function Meeting({ employees }: MeetingProps) {
 
   const runRound = async (sessionId: string, roundId: string, message: string, allPriorRounds: Round[]) => {
     const priorReplies: Array<{ name: string; role: string; text: string }> = [];
+    const shuffled = [...employees].sort(() => Math.random() - 0.5);
 
-    for (const emp of employees) {
+    for (const emp of shuffled) {
       // Build context: include all prior rounds + current round's prior speakers
       const priorRoundsContext = allPriorRounds
         .filter((r) => r.done)
