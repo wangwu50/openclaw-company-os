@@ -40,7 +40,7 @@ openclaw plugins install ./openclaw-company-os
 安装完成后重启网关：
 
 ```bash
-openclaw gateway run
+openclaw gateway restart
 ```
 
 然后访问：
