@@ -4,23 +4,29 @@ import { streamChatWithEmployee } from "../hooks/useApi.js";
 
 type EmployeeReply = {
   employeeId: string;
-  text: string | null; // null = thinking
+  text: string | null; // null = waiting
   error?: string;
+};
+
+type Round = {
+  id: string;
+  message: string; // CEO's message for this round
+  replies: EmployeeReply[];
+  done: boolean;
 };
 
 type MeetingSession = {
   id: string;
-  topic: string;
+  topic: string; // first message, used as session title
   createdAt: Date;
-  replies: EmployeeReply[];
-  done: boolean;
+  rounds: Round[];
 };
 
 type MeetingProps = {
   employees: Employee[];
 };
 
-const STORAGE_KEY = "company-meeting-sessions";
+const STORAGE_KEY = "company-meeting-sessions-v2";
 
 export function Meeting({ employees }: MeetingProps) {
   const [sessions, setSessions] = useState<MeetingSession[]>(() => {
@@ -34,70 +40,89 @@ export function Meeting({ employees }: MeetingProps) {
     }
   });
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [topic, setTopic] = useState("");
+  const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Persist sessions to localStorage whenever they change
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
     } catch {}
   }, [sessions]);
 
+  // Auto-scroll on new content
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [sessions, running]);
+
   const activeSession = sessions.find((s) => s.id === activeId) ?? null;
 
-  const startMeeting = async () => {
-    const text = topic.trim();
-    if (!text || running) return;
-
-    const id = crypto.randomUUID();
-    const session: MeetingSession = {
-      id,
-      topic: text,
-      createdAt: new Date(),
-      replies: employees.map((e) => ({ employeeId: e.id, text: null })),
-      done: false,
-    };
-    setSessions((prev) => [session, ...prev]);
-    setActiveId(id);
-    setTopic("");
-    setRunning(true);
-
-    // Send message to each employee serially so each can see prior replies
+  const runRound = async (sessionId: string, roundId: string, message: string, allPriorRounds: Round[]) => {
     const priorReplies: Array<{ name: string; role: string; text: string }> = [];
+
     for (const emp of employees) {
-      // Build context-aware prompt
-      let message: string;
+      // Build context: include all prior rounds + current round's prior speakers
+      const priorRoundsContext = allPriorRounds
+        .filter((r) => r.done)
+        .map((r) => {
+          const roundReplies = r.replies
+            .filter((rp) => rp.text)
+            .map((rp) => {
+              const e = employees.find((e) => e.id === rp.employeeId);
+              return `${e?.name ?? rp.employeeId}（${e?.role ?? ""}）：${rp.text}`;
+            })
+            .join("\n");
+          return `【CEO】：${r.message}\n${roundReplies}`;
+        })
+        .join("\n\n---\n\n");
+
+      let msgParts = `全员会议`;
+      if (priorRoundsContext) msgParts += `\n\n【历史记录】\n${priorRoundsContext}\n\n---`;
+      msgParts += `\n\n【CEO 新问题】：${message}`;
+
       if (priorReplies.length === 0) {
-        message = `全员会议议题：${text}\n\n你是第一位发言者，请给出你的看法和建议（3-5句话）。`;
+        msgParts += `\n\n你是第一位发言者，请给出你的看法和建议（3-5句话）。`;
       } else {
-        const context = priorReplies
+        const currentContext = priorReplies
           .map((r) => `${r.name}（${r.role}）：${r.text}`)
           .join("\n\n");
-        message = `全员会议议题：${text}\n\n前面同事的发言：\n${context}\n\n请结合以上发言，给出你的补充或不同意见（3-5句话）。`;
+        msgParts += `\n\n本轮前面同事的发言：\n${currentContext}\n\n请结合以上发言，给出你的补充或不同意见（3-5句话）。`;
       }
 
-      // Mark this employee as now speaking (empty string = streaming)
+      // Mark this employee as now speaking
       setSessions((prev) =>
         prev.map((s) =>
-          s.id === id
-            ? { ...s, replies: s.replies.map((r) => r.employeeId === emp.id ? { ...r, text: "" } : r) }
+          s.id === sessionId
+            ? {
+                ...s,
+                rounds: s.rounds.map((r) =>
+                  r.id === roundId
+                    ? { ...r, replies: r.replies.map((rp) => rp.employeeId === emp.id ? { ...rp, text: "" } : rp) }
+                    : r,
+                ),
+              }
             : s,
         ),
       );
 
       let fullText = "";
       try {
-        await streamChatWithEmployee(emp.id, message, (chunk) => {
+        await streamChatWithEmployee(emp.id, msgParts, (chunk) => {
           fullText += chunk;
           setSessions((prev) =>
             prev.map((s) =>
-              s.id === id
+              s.id === sessionId
                 ? {
                     ...s,
-                    replies: s.replies.map((r) =>
-                      r.employeeId === emp.id ? { ...r, text: (r.text ?? "") + chunk } : r,
+                    rounds: s.rounds.map((r) =>
+                      r.id === roundId
+                        ? {
+                            ...r,
+                            replies: r.replies.map((rp) =>
+                              rp.employeeId === emp.id ? { ...rp, text: (rp.text ?? "") + chunk } : rp,
+                            ),
+                          }
+                        : r,
                     ),
                   }
                 : s,
@@ -108,12 +133,19 @@ export function Meeting({ employees }: MeetingProps) {
       } catch (e) {
         setSessions((prev) =>
           prev.map((s) =>
-            s.id === id
+            s.id === sessionId
               ? {
                   ...s,
-                  replies: s.replies.map((r) =>
-                    r.employeeId === emp.id
-                      ? { ...r, text: "", error: e instanceof Error ? e.message : String(e) }
+                  rounds: s.rounds.map((r) =>
+                    r.id === roundId
+                      ? {
+                          ...r,
+                          replies: r.replies.map((rp) =>
+                            rp.employeeId === emp.id
+                              ? { ...rp, text: "", error: e instanceof Error ? e.message : String(e) }
+                              : rp,
+                          ),
+                        }
                       : r,
                   ),
                 }
@@ -123,20 +155,62 @@ export function Meeting({ employees }: MeetingProps) {
       }
     }
 
+    // Mark round as done
     setSessions((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, done: true } : s)),
+      prev.map((s) =>
+        s.id === sessionId
+          ? { ...s, rounds: s.rounds.map((r) => r.id === roundId ? { ...r, done: true } : r) }
+          : s,
+      ),
     );
+  };
+
+  const sendMessage = async () => {
+    const text = input.trim();
+    if (!text || running) return;
+    setInput("");
+    setRunning(true);
+
+    const roundId = crypto.randomUUID();
+    const newRound: Round = {
+      id: roundId,
+      message: text,
+      replies: employees.map((e) => ({ employeeId: e.id, text: null })),
+      done: false,
+    };
+
+    if (!activeSession) {
+      // New session
+      const sessionId = crypto.randomUUID();
+      const session: MeetingSession = {
+        id: sessionId,
+        topic: text,
+        createdAt: new Date(),
+        rounds: [newRound],
+      };
+      setSessions((prev) => [session, ...prev]);
+      setActiveId(sessionId);
+      await runRound(sessionId, roundId, text, []);
+    } else {
+      // Add round to existing session
+      const priorRounds = activeSession.rounds;
+      setSessions((prev) =>
+        prev.map((s) => s.id === activeSession.id ? { ...s, rounds: [...s.rounds, newRound] } : s),
+      );
+      await runRound(activeSession.id, roundId, text, priorRounds);
+    }
+
     setRunning(false);
   };
 
+  const isRunning = running;
+  const placeholder = activeSession
+    ? "继续追问… (Enter 发送)"
+    : "向所有员工发起议题… (Enter 发送)";
+  const buttonLabel = isRunning ? "进行中…" : activeSession ? "追问" : "召开会议";
+
   return (
-    <div
-      style={{
-        flex: 1,
-        display: "flex",
-        overflow: "hidden",
-      }}
-    >
+    <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
       {/* Left panel: session list */}
       <div
         style={{
@@ -175,77 +249,68 @@ export function Meeting({ employees }: MeetingProps) {
             还没有会议记录
           </div>
         ) : (
-          sessions.map((s) => (
-            <button
-              key={s.id}
-              onClick={() => setActiveId(s.id)}
-              style={{
-                background: activeId === s.id ? "var(--bg-card)" : "transparent",
-                border: "none",
-                borderLeft:
-                  activeId === s.id
-                    ? "2px solid var(--accent-agent)"
-                    : "2px solid transparent",
-                padding: "var(--space-3) var(--space-4)",
-                textAlign: "left",
-                cursor: "pointer",
-                color:
-                  activeId === s.id
-                    ? "var(--text-primary)"
-                    : "var(--text-secondary)",
-                fontSize: "var(--text-sm)",
-                transition: "background var(--transition-fast)",
-                display: "block",
-                width: "100%",
-              }}
-            >
-              <div
+          sessions.map((s) => {
+            const lastRound = s.rounds[s.rounds.length - 1];
+            const isActive = activeId === s.id;
+            const inProgress = lastRound && !lastRound.done;
+            return (
+              <button
+                key={s.id}
+                onClick={() => setActiveId(s.id)}
                 style={{
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                  marginBottom: 2,
+                  background: isActive ? "var(--bg-card)" : "transparent",
+                  border: "none",
+                  borderLeft: isActive ? "2px solid var(--accent-agent)" : "2px solid transparent",
+                  padding: "var(--space-3) var(--space-4)",
+                  textAlign: "left",
+                  cursor: "pointer",
+                  color: isActive ? "var(--text-primary)" : "var(--text-secondary)",
+                  fontSize: "var(--text-sm)",
+                  transition: "background var(--transition-fast)",
+                  display: "block",
+                  width: "100%",
                 }}
               >
-                {s.topic}
-              </div>
-              <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
-                {s.createdAt.toLocaleTimeString("zh-CN", {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}
-                {!s.done && (
-                  <span
-                    style={{
-                      marginLeft: "var(--space-2)",
-                      color: "var(--accent-urgent)",
-                    }}
-                  >
-                    •
-                  </span>
-                )}
-              </div>
-            </button>
-          ))
+                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 2 }}>
+                  {s.topic}
+                </div>
+                <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
+                  {s.createdAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
+                  {" · "}{s.rounds.length} 轮
+                  {inProgress && (
+                    <span style={{ marginLeft: "var(--space-2)", color: "var(--accent-urgent)" }}>•</span>
+                  )}
+                </div>
+              </button>
+            );
+          })
         )}
       </div>
 
-      {/* Right panel: meeting content */}
-      <main
-        role="main"
-        style={{
-          flex: 1,
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-        }}
-      >
+      {/* Right panel */}
+      <main role="main" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         {activeSession ? (
-          <ActiveMeeting
-            session={activeSession}
-            employees={employees}
-            bottomRef={bottomRef}
-          />
+          <div
+            style={{
+              flex: 1,
+              overflow: "auto",
+              padding: "var(--space-6)",
+              display: "flex",
+              flexDirection: "column",
+              gap: "var(--space-6)",
+            }}
+          >
+            {activeSession.rounds.map((round, roundIndex) => (
+              <RoundBlock
+                key={round.id}
+                round={round}
+                roundIndex={roundIndex}
+                employees={employees}
+                session={activeSession}
+              />
+            ))}
+            <div ref={bottomRef} />
+          </div>
         ) : (
           <div
             style={{
@@ -259,13 +324,11 @@ export function Meeting({ employees }: MeetingProps) {
             }}
           >
             <div style={{ fontSize: 36 }}>🎤</div>
-            <div style={{ fontSize: "var(--text-sm)" }}>
-              发起全员会议，让每位员工参与讨论
-            </div>
+            <div style={{ fontSize: "var(--text-sm)" }}>发起全员会议，让每位员工参与讨论</div>
           </div>
         )}
 
-        {/* New meeting input */}
+        {/* Input */}
         <div
           style={{
             padding: "var(--space-4) var(--space-6)",
@@ -277,16 +340,14 @@ export function Meeting({ employees }: MeetingProps) {
           <div style={{ display: "flex", gap: "var(--space-2)" }}>
             <input
               type="text"
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && topic.trim()) {
-                  void startMeeting();
-                }
+                if (e.key === "Enter" && input.trim()) void sendMessage();
               }}
-              disabled={running}
-              placeholder="向所有员工发起议题… (Enter 发送)"
-              aria-label="会议议题"
+              disabled={isRunning}
+              placeholder={placeholder}
+              aria-label="会议输入"
               style={{
                 flex: 1,
                 background: "var(--bg-base)",
@@ -299,23 +360,23 @@ export function Meeting({ employees }: MeetingProps) {
               }}
             />
             <button
-              onClick={() => void startMeeting()}
-              disabled={!topic.trim() || running}
+              onClick={() => void sendMessage()}
+              disabled={!input.trim() || isRunning}
               style={{
-                background: running ? "var(--border)" : "var(--accent-agent)",
+                background: isRunning ? "var(--border)" : "var(--accent-agent)",
                 border: "none",
                 borderRadius: "var(--radius-sm)",
                 color: "#fff",
                 fontSize: "var(--text-sm)",
                 fontWeight: 600,
                 padding: "var(--space-2) var(--space-4)",
-                cursor: !topic.trim() || running ? "not-allowed" : "pointer",
-                opacity: !topic.trim() || running ? 0.5 : 1,
+                cursor: !input.trim() || isRunning ? "not-allowed" : "pointer",
+                opacity: !input.trim() || isRunning ? 0.5 : 1,
                 transition: "opacity var(--transition-fast)",
                 whiteSpace: "nowrap",
               }}
             >
-              {running ? "进行中…" : "召开会议"}
+              {buttonLabel}
             </button>
           </div>
         </div>
@@ -324,69 +385,43 @@ export function Meeting({ employees }: MeetingProps) {
   );
 }
 
-function ActiveMeeting({
-  session,
+function RoundBlock({
+  round,
+  roundIndex,
   employees,
-  bottomRef,
+  session,
 }: {
-  session: MeetingSession;
+  round: Round;
+  roundIndex: number;
   employees: Employee[];
-  bottomRef: React.RefObject<HTMLDivElement>;
+  session: MeetingSession;
 }) {
   return (
-    <div
-      style={{
-        flex: 1,
-        overflow: "auto",
-        padding: "var(--space-6)",
-        display: "flex",
-        flexDirection: "column",
-        gap: "var(--space-4)",
-      }}
-    >
-      {/* Topic header */}
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      {/* CEO message */}
       <div
         style={{
           background: "var(--bg-card)",
           border: "1px solid var(--border)",
           borderLeft: "3px solid var(--accent-agent)",
           borderRadius: "var(--radius)",
-          padding: "var(--space-4)",
+          padding: "var(--space-3) var(--space-4)",
         }}
       >
-        <div
-          style={{
-            fontSize: "var(--text-xs)",
-            color: "var(--text-muted)",
-            marginBottom: "var(--space-1)",
-            textTransform: "uppercase",
-            letterSpacing: "0.06em",
-          }}
-        >
-          🎤 会议议题 ·{" "}
-          {session.createdAt.toLocaleString("zh-CN", {
-            month: "long",
-            day: "numeric",
-            hour: "2-digit",
-            minute: "2-digit",
-          })}
+        <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", marginBottom: 4 }}>
+          🎤 {roundIndex === 0
+            ? `会议发起 · ${session.createdAt.toLocaleString("zh-CN", { month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
+            : `第 ${roundIndex + 1} 轮追问`}
         </div>
-        <div
-          style={{
-            fontSize: "var(--text-base)",
-            color: "var(--text-primary)",
-            fontWeight: 600,
-          }}
-        >
-          {session.topic}
+        <div style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)", fontWeight: 600 }}>
+          {round.message}
         </div>
       </div>
 
       {/* Employee replies */}
-      {session.replies.map((reply) => {
+      {round.replies.map((reply) => {
         const emp = employees.find((e) => e.id === reply.employeeId);
         if (!emp) return null;
-
         const isPending = reply.text === null;
         const isStreaming = reply.text === "" && !reply.error;
         const isError = reply.error != null;
@@ -400,71 +435,29 @@ function ActiveMeeting({
               borderLeft: `3px solid ${emp.accentColor}`,
               borderRadius: "var(--radius)",
               padding: "var(--space-4)",
-              opacity: isPending || isStreaming ? 0.85 : 1,
+              opacity: isPending || isStreaming ? 0.75 : 1,
               transition: "opacity var(--transition-fast)",
             }}
           >
-            {/* Employee header */}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "var(--space-2)",
-                marginBottom: "var(--space-3)",
-              }}
-            >
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", marginBottom: "var(--space-3)" }}>
               <span style={{ fontSize: "16px" }}>{emp.emoji}</span>
-              <span
-                style={{
-                  fontSize: "var(--text-sm)",
-                  fontWeight: 600,
-                  color: "var(--text-primary)",
-                }}
-              >
-                {emp.name}
-              </span>
-              <span
-                style={{
-                  fontSize: "var(--text-xs)",
-                  color: "var(--text-muted)",
-                }}
-              >
-                {emp.role}
-              </span>
+              <span style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--text-primary)" }}>{emp.name}</span>
+              <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>{emp.role}</span>
             </div>
-
-            {/* Reply content */}
             {isPending ? (
               <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>等待发言…</span>
             ) : isStreaming ? (
               <MiniWave color={emp.accentColor} />
             ) : isError ? (
-              <p
-                style={{
-                  fontSize: "var(--text-sm)",
-                  color: "var(--accent-error)",
-                }}
-              >
-                [错误] {reply.error}
-              </p>
+              <p style={{ fontSize: "var(--text-sm)", color: "var(--accent-error)" }}>[错误] {reply.error}</p>
             ) : (
-              <p
-                style={{
-                  fontSize: "var(--text-sm)",
-                  color: "var(--text-primary)",
-                  lineHeight: "var(--leading-normal)",
-                  whiteSpace: "pre-wrap",
-                  wordBreak: "break-word",
-                }}
-              >
+              <p style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)", lineHeight: "var(--leading-normal)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                 {reply.text}
               </p>
             )}
           </div>
         );
       })}
-
-      <div ref={bottomRef} />
     </div>
   );
 }
