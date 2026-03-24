@@ -9,7 +9,6 @@ export function Decisions() {
       role="main"
       style={{
         flex: 1,
-        height: 0,
         overflow: "auto",
         padding: "var(--space-8)",
         display: "flex",
