@@ -20,6 +20,16 @@ type RunAgentDeps = {
 
 const MAX_TOOL_ITERATIONS = 5;
 
+/** Extract provider + model from the user's configured primary model (e.g. "mify/pa/claude-sonnet-4-6"). */
+function resolveAgentModel(config: OpenClawConfig): { provider?: string; model?: string } {
+  const primary = (config as unknown as { agents?: { defaults?: { model?: { primary?: string } } } })
+    ?.agents?.defaults?.model?.primary;
+  if (!primary) return {};
+  const slashIdx = primary.indexOf("/");
+  if (slashIdx === -1) return { model: primary };
+  return { provider: primary.slice(0, slashIdx), model: primary.slice(slashIdx + 1) };
+}
+
 // Pattern the LLM outputs when it wants to query a colleague's activity.
 // Using XML-style tag so the LLM can place it anywhere in its response text,
 // and we detect + execute it locally then re-run with the real data.
@@ -59,8 +69,7 @@ export async function runEmployeeAgent(
     senderIsOwner: true,
     disableMessageTool: true,
     timeoutMs: 600_000,
-    provider: "anthropic",
-    model: "ppio/pa/claude-sonnet-4-6",
+    ...resolveAgentModel(deps.config),
     ...(onChunk
       ? {
           onPartialReply: (payload: { text?: string; delta?: string }) => {
@@ -357,8 +366,7 @@ ${employeeList}
     disableTools: true,
     runId: randomUUID(),
     timeoutMs: 60_000,
-    provider: "anthropic",
-    model: "ppio/pa/claude-sonnet-4-6",
+    ...resolveAgentModel(deps.config),
   });
 
   const payloads = result?.payloads ?? [];

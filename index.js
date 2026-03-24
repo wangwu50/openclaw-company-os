@@ -311,6 +311,17 @@ ${context ? `附加说明：${context}` : ""}
 //#endregion
 //#region src/agent-runner.ts
 const MAX_TOOL_ITERATIONS = 5;
+/** Extract provider + model from the user's configured primary model (e.g. "mify/pa/claude-sonnet-4-6"). */
+function resolveAgentModel(config) {
+	const primary = config?.agents?.defaults?.model?.primary;
+	if (!primary) return {};
+	const slashIdx = primary.indexOf("/");
+	if (slashIdx === -1) return { model: primary };
+	return {
+		provider: primary.slice(0, slashIdx),
+		model: primary.slice(slashIdx + 1)
+	};
+}
 const COLLEAGUE_QUERY_RE = /<查同事\s+id="([^"]+)"(?:\s+limit="(\d+)")?\s*\/>/;
 /**
 * Run an agent call for a company employee, supporting multi-turn tool use.
@@ -335,8 +346,7 @@ async function runEmployeeAgent(employeeId, prompt, deps, onChunk) {
 		senderIsOwner: true,
 		disableMessageTool: true,
 		timeoutMs: 6e5,
-		provider: "anthropic",
-		model: "ppio/pa/claude-sonnet-4-6",
+		...resolveAgentModel(deps.config),
 		...onChunk ? { onPartialReply: (payload) => {
 			const chunk = payload.delta ?? "";
 			if (chunk) onChunk(chunk);
@@ -556,8 +566,7 @@ ${employeeList}
 		disableTools: true,
 		runId: randomUUID(),
 		timeoutMs: 6e4,
-		provider: "anthropic",
-		model: "ppio/pa/claude-sonnet-4-6"
+		...resolveAgentModel(deps.config)
 	}))?.payloads ?? []].reverse().find((p) => p.text?.trim())?.text ?? "").match(/\{[\s\S]*\}/);
 	if (!match) throw new Error("AI 未能生成有效员工档案");
 	return JSON.parse(match[0]);
