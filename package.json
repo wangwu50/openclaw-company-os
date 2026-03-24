@@ -3,24 +3,22 @@
   "version": "0.1.0",
   "description": "一人公司 OS — CEO + AI employee agents for OpenClaw",
   "type": "module",
-  "peerDependencies": {
-    "openclaw": ">=2026.3.14"
-  },
-  "peerDependenciesMeta": {
-    "openclaw": {
-      "optional": true
-    }
+  "main": "index.js",
+  "scripts": {
+    "build": "tsdown --entry index.ts --platform node --target node22 --format esm --out-dir . --no-dts --external openclaw --external better-sqlite3 --external 'node:*'"
   },
   "dependencies": {
-    "better-sqlite3": "^11.0.0"
+    "better-sqlite3": "^11.0.0",
+    "openclaw": ">=2026.3.14"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
-    "openclaw": "*"
+    "tsdown": "^0.12.9",
+    "typescript": "^5.9.3"
   },
   "openclaw": {
     "extensions": [
-      "./index.ts"
+      "./index.js"
     ]
   }
 }
