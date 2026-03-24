@@ -94,7 +94,6 @@ function DecisionTable({ decisions }: { decisions: Decision[] }) {
         background: "var(--bg-card)",
         border: "1px solid var(--border)",
         borderRadius: "var(--radius)",
-        overflow: "hidden",
       }}
     >
       {/* Table header */}
