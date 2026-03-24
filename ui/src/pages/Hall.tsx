@@ -344,6 +344,15 @@ function EmployeeStatusCard({
 
 const TASK_STATUS_LABEL: Record<string, string> = { pending: "待开始", in_progress: "进行中", done: "完成" };
 
+const PRESET_GOALS = [
+  "完成 MVP 并公开上线",
+  "月活用户突破 1000",
+  "产品营收达到 10 万",
+  "建立内容矩阵，社媒粉丝增长 5000",
+  "完成融资准备，搭建投资人管道",
+  "用户留存率提升至 60%",
+];
+
 function GoalsPanel({
   goals,
   onRefresh,
@@ -389,19 +398,40 @@ function GoalsPanel({
       </div>
       <Card>
         {adding && (
-          <div style={{ marginBottom: "var(--space-3)", display: "flex", gap: "var(--space-2)" }}>
-            <input
-              type="text"
-              placeholder="目标标题..."
-              value={newTitle}
-              onChange={(e) => setNewTitle(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") void handleAdd(); if (e.key === "Escape") { setAdding(false); setNewTitle(""); } }}
-              autoFocus
-              style={{ ...inputStyle, flex: 1 }}
-            />
-            <button onClick={() => void handleAdd()} disabled={!newTitle.trim() || saving} style={smallBtnStyle("var(--accent-agent)")}>
-              保存
-            </button>
+          <div style={{ marginBottom: "var(--space-3)" }}>
+            <div style={{ display: "flex", gap: "var(--space-2)", marginBottom: "var(--space-2)" }}>
+              <input
+                type="text"
+                placeholder="目标标题..."
+                value={newTitle}
+                onChange={(e) => setNewTitle(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") void handleAdd(); if (e.key === "Escape") { setAdding(false); setNewTitle(""); } }}
+                autoFocus
+                style={{ ...inputStyle, flex: 1 }}
+              />
+              <button onClick={() => void handleAdd()} disabled={!newTitle.trim() || saving} style={smallBtnStyle("var(--accent-agent)")}>
+                保存
+              </button>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-1)" }}>
+              {PRESET_GOALS.map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setNewTitle(p)}
+                  style={{
+                    background: "none",
+                    border: "1px solid var(--border)",
+                    borderRadius: "var(--radius-sm)",
+                    color: "var(--text-secondary)",
+                    fontSize: "var(--text-xs)",
+                    padding: "2px 8px",
+                    cursor: "pointer",
+                  }}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
           </div>
         )}
         {goals.length === 0 && !adding ? (
@@ -671,35 +701,56 @@ function HallEmpty({ onGoalSet }: { onGoalSet: (title: string) => Promise<void> 
           你的公司尚未开始运转。设置第一个季度目标，员工会立即收到任务并开始响应。
         </p>
       </div>
-      <div style={{ display: "flex", gap: "var(--space-2)", width: "100%", maxWidth: 400 }}>
-        <input
-          type="text"
-          placeholder="Q2 目标：达到月活 5000..."
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && title.trim()) {
+      <div style={{ width: "100%", maxWidth: 440 }}>
+        <div style={{ display: "flex", gap: "var(--space-2)", marginBottom: "var(--space-3)" }}>
+          <input
+            type="text"
+            placeholder="Q2 目标：达到月活 5000..."
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && title.trim()) {
+                setSaving(true);
+                void onGoalSet(title.trim()).finally(() => setSaving(false));
+              }
+            }}
+            style={{ ...inputStyle, flex: 1 }}
+            autoFocus
+            aria-label="季度目标"
+          />
+          <button
+            disabled={!title.trim() || saving}
+            onClick={() => {
               setSaving(true);
               void onGoalSet(title.trim()).finally(() => setSaving(false));
-            }
-          }}
-          style={{ ...inputStyle, flex: 1 }}
-          autoFocus
-          aria-label="季度目标"
-        />
-        <button
-          disabled={!title.trim() || saving}
-          onClick={() => {
-            setSaving(true);
-            void onGoalSet(title.trim()).finally(() => setSaving(false));
-          }}
-          style={{
-            ...choiceButtonStyle("var(--accent-agent)"),
-            opacity: !title.trim() || saving ? 0.5 : 1,
-          }}
-        >
-          {saving ? "设置中…" : "设置目标"}
-        </button>
+            }}
+            style={{
+              ...choiceButtonStyle("var(--accent-agent)"),
+              opacity: !title.trim() || saving ? 0.5 : 1,
+            }}
+          >
+            {saving ? "设置中…" : "设置目标"}
+          </button>
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-1)", justifyContent: "center" }}>
+          {PRESET_GOALS.map((p) => (
+            <button
+              key={p}
+              onClick={() => setTitle(p)}
+              style={{
+                background: "none",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius-sm)",
+                color: "var(--text-secondary)",
+                fontSize: "var(--text-xs)",
+                padding: "2px 8px",
+                cursor: "pointer",
+              }}
+            >
+              {p}
+            </button>
+          ))}
+        </div>
       </div>
     </main>
   );
