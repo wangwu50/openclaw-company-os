@@ -1,5 +1,5 @@
 {
-  "name": "openclaw-company-os",
+  "name": "@openclaw/company",
   "version": "0.1.0",
   "description": "一人公司 OS — CEO + AI employee agents for OpenClaw",
   "type": "module",
