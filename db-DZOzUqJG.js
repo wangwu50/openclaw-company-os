@@ -39,6 +39,7 @@ var db_exports = /* @__PURE__ */ __exportAll({
 	insertPendingDecision: () => insertPendingDecision,
 	insertReport: () => insertReport,
 	searchDecisions: () => searchDecisions,
+	updateDecisionTag: () => updateDecisionTag,
 	updateGoal: () => updateGoal,
 	updateGoalTaskStatus: () => updateGoalTaskStatus
 });
@@ -177,6 +178,9 @@ function searchDecisions(q) {
 	const like = `%${q}%`;
 	return getDb().prepare("SELECT * FROM decisions WHERE summary LIKE ? OR context LIKE ? OR choice LIKE ? ORDER BY created_at DESC LIMIT 50").all(like, like, like);
 }
+function updateDecisionTag(id, tag) {
+	getDb().prepare("UPDATE decisions SET result_tag = ? WHERE id = ?").run(tag, id);
+}
 function insertReport(employeeId, content) {
 	return getDb().prepare("INSERT INTO employee_reports (employee_id, content) VALUES (?, ?) RETURNING *").get(employeeId, content);
 }
@@ -206,4 +210,4 @@ function getEmployeeActivity(employeeId, limit = 5) {
 	return getDb().prepare("SELECT * FROM activity_log WHERE employee_id = ? ORDER BY created_at DESC LIMIT ?").all(employeeId, limit);
 }
 //#endregion
-export { updateGoalTaskStatus as C, updateGoal as S, insertCustomEmployee as _, findGoalTaskByTitle as a, insertReport as b, getDecisions as c, getEmployeeReports as d, getGoalTasks as f, insertActivity as g, getRecentReports as h, deletePendingDecision as i, getEmployeeActiveTasks as l, getRecentActivity as m, deleteCustomEmployee as n, getActiveGoals as o, getPendingDecisions as p, deleteGoal as r, getCustomEmployees as s, db_exports as t, getEmployeeActivity as u, insertDecision as v, searchDecisions as x, insertPendingDecision as y };
+export { updateGoal as C, updateDecisionTag as S, insertCustomEmployee as _, findGoalTaskByTitle as a, insertReport as b, getDecisions as c, getEmployeeReports as d, getGoalTasks as f, insertActivity as g, getRecentReports as h, deletePendingDecision as i, getEmployeeActiveTasks as l, getRecentActivity as m, deleteCustomEmployee as n, getActiveGoals as o, getPendingDecisions as p, deleteGoal as r, getCustomEmployees as s, db_exports as t, getEmployeeActivity as u, insertDecision as v, updateGoalTaskStatus as w, searchDecisions as x, insertPendingDecision as y };

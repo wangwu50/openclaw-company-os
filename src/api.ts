@@ -7,6 +7,7 @@ import {
   getPendingDecisions,
   getRecentReports,
   insertDecision,
+  updateDecisionTag,
   insertPendingDecision,
   searchDecisions,
   updateGoal,
@@ -139,8 +140,13 @@ ${context ? `附加说明：${context}` : ""}
           void ctx.runAgent(employeeId, notifyPrompt).then((reply) => {
             if (reply) {
               insertActivity(employeeId, "task_response", `${empName} 回复：${reply}`, { summary, choice, phase: "response" });
+              // Employee acknowledged → mark as in_progress
+              updateDecisionTag(decision.id, "in_progress");
               // Schedule follow-up so employee actually executes instead of just acknowledging
-              ctx.scheduleFollowUp(employeeId, 60 * 1000);
+              ctx.scheduleFollowUp(employeeId, 60 * 1000).then(() => {
+                // Follow-up completed → mark as done
+                updateDecisionTag(decision.id, "done");
+              }).catch(() => void 0);
             }
           }).catch(() => void 0);
         });

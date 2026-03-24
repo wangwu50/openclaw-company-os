@@ -1,4 +1,4 @@
-import { C as updateGoalTaskStatus, S as updateGoal, _ as insertCustomEmployee, a as findGoalTaskByTitle, b as insertReport, c as getDecisions, d as getEmployeeReports, f as getGoalTasks, g as insertActivity, h as getRecentReports, i as deletePendingDecision, l as getEmployeeActiveTasks, m as getRecentActivity, n as deleteCustomEmployee, o as getActiveGoals, p as getPendingDecisions, r as deleteGoal, s as getCustomEmployees, u as getEmployeeActivity, v as insertDecision, x as searchDecisions, y as insertPendingDecision } from "./db-DhOfeXX5.js";
+import { C as updateGoal, S as updateDecisionTag, _ as insertCustomEmployee, a as findGoalTaskByTitle, b as insertReport, c as getDecisions, d as getEmployeeReports, f as getGoalTasks, g as insertActivity, h as getRecentReports, i as deletePendingDecision, l as getEmployeeActiveTasks, m as getRecentActivity, n as deleteCustomEmployee, o as getActiveGoals, p as getPendingDecisions, r as deleteGoal, s as getCustomEmployees, u as getEmployeeActivity, v as insertDecision, w as updateGoalTaskStatus, x as searchDecisions, y as insertPendingDecision } from "./db-DZOzUqJG.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -199,7 +199,10 @@ ${context ? `附加说明：${context}` : ""}
 								choice,
 								phase: "response"
 							});
-							ctx.scheduleFollowUp(employeeId, 60 * 1e3);
+							updateDecisionTag(decision.id, "in_progress");
+							ctx.scheduleFollowUp(employeeId, 60 * 1e3).then(() => {
+								updateDecisionTag(decision.id, "done");
+							}).catch(() => void 0);
 						}
 					}).catch(() => void 0);
 				});
@@ -249,7 +252,7 @@ ${context ? `附加说明：${context}` : ""}
 		if (req.method === "POST" && path === "/company/api/goals") {
 			const { title, description, quarter } = await parseBody(req);
 			if (!title) return json(res, { error: "title is required" }, 400);
-			const { insertGoal } = await import("./db-DhOfeXX5.js").then((n) => n.t);
+			const { insertGoal } = await import("./db-DZOzUqJG.js").then((n) => n.t);
 			const goal = insertGoal(title, description ?? "", quarter ?? "");
 			ctx.decomposGoal(goal.title, goal.description ?? "").catch(() => void 0);
 			return json(res, {
@@ -452,7 +455,7 @@ ${employeeList}
     ...
   ]
 }`;
-	const { insertGoalTask, updateGoalTaskStatus } = await import("./db-DhOfeXX5.js").then((n) => n.t);
+	const { insertGoalTask, updateGoalTaskStatus } = await import("./db-DZOzUqJG.js").then((n) => n.t);
 	const agentDir = join(homedir(), ".openclaw");
 	const workspaceDir = join(agentDir, "agents", "company-decomposer");
 	try {
