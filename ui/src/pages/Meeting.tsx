@@ -225,16 +225,32 @@ export function Meeting({ employees }: MeetingProps) {
       >
         <div
           style={{
-            padding: "var(--space-4)",
+            padding: "var(--space-3) var(--space-4)",
             borderBottom: "1px solid var(--border)",
-            fontSize: "var(--text-xs)",
-            color: "var(--text-muted)",
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-            fontWeight: 600,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
           }}
         >
-          会议记录
+          <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>
+            会议记录
+          </span>
+          <button
+            onClick={() => setActiveId(null)}
+            title="新会议"
+            style={{
+              background: "none",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius-sm)",
+              color: "var(--text-secondary)",
+              fontSize: "var(--text-xs)",
+              padding: "2px 8px",
+              cursor: "pointer",
+              lineHeight: 1.5,
+            }}
+          >
+            + 新会议
+          </button>
         </div>
 
         {sessions.length === 0 ? (
