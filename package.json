@@ -5,14 +5,13 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "build": "tsdown --entry index.ts --platform node --target node22 --format esm --out-dir . --no-dts --external openclaw --external better-sqlite3 --external 'node:*'"
+    "build": "tsdown --entry index.ts --platform node --target node22 --format esm --out-dir . --no-dts --no-clean --external openclaw --external 'node:*'"
   },
   "dependencies": {
-    "better-sqlite3": "^11.0.0",
     "openclaw": ">=2026.3.14"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": ">=22",
     "tsdown": "^0.12.9",
     "typescript": "^5.9.3"
   },

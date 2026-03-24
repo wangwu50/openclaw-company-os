@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 //#region \0rolldown/runtime.js
 var __defProp = Object.defineProperty;
@@ -47,10 +47,10 @@ function getDb() {
 	if (_db) return _db;
 	const dir = join(homedir(), ".openclaw", "company");
 	if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-	const db = new Database(join(dir, "company.db"));
-	db.pragma("journal_mode = WAL");
-	db.pragma("busy_timeout = 5000");
-	db.pragma("foreign_keys = ON");
+	const db = new DatabaseSync(join(dir, "company.db"));
+	db.exec("PRAGMA journal_mode = WAL");
+	db.exec("PRAGMA busy_timeout = 5000");
+	db.exec("PRAGMA foreign_keys = ON");
 	db.exec(`
     CREATE TABLE IF NOT EXISTS goals (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,

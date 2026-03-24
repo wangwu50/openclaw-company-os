@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -57,21 +57,21 @@ export type ActivityEvent = {
   created_at: string;
 };
 
-let _db: Database.Database | null = null;
+let _db: DatabaseSync | null = null;
 
-export function getDb(): Database.Database {
+export function getDb(): DatabaseSync {
   if (_db) return _db;
 
   const dir = join(homedir(), ".openclaw", "company");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
   const dbPath = join(dir, "company.db");
-  const db = new Database(dbPath);
+  const db = new DatabaseSync(dbPath);
 
   // WAL mode for concurrent reads + writes
-  db.pragma("journal_mode = WAL");
-  db.pragma("busy_timeout = 5000");
-  db.pragma("foreign_keys = ON");
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA busy_timeout = 5000");
+  db.exec("PRAGMA foreign_keys = ON");
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS goals (

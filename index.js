@@ -1,4 +1,4 @@
-import { C as updateGoalTaskStatus, S as updateGoal, _ as insertCustomEmployee, a as findGoalTaskByTitle, b as insertReport, c as getDecisions, d as getEmployeeReports, f as getGoalTasks, g as insertActivity, h as getRecentReports, i as deletePendingDecision, l as getEmployeeActiveTasks, m as getRecentActivity, n as deleteCustomEmployee, o as getActiveGoals, p as getPendingDecisions, r as deleteGoal, s as getCustomEmployees, u as getEmployeeActivity, v as insertDecision, x as searchDecisions, y as insertPendingDecision } from "./db-BMjF42bt.js";
+import { C as updateGoalTaskStatus, S as updateGoal, _ as insertCustomEmployee, a as findGoalTaskByTitle, b as insertReport, c as getDecisions, d as getEmployeeReports, f as getGoalTasks, g as insertActivity, h as getRecentReports, i as deletePendingDecision, l as getEmployeeActiveTasks, m as getRecentActivity, n as deleteCustomEmployee, o as getActiveGoals, p as getPendingDecisions, r as deleteGoal, s as getCustomEmployees, u as getEmployeeActivity, v as insertDecision, x as searchDecisions, y as insertPendingDecision } from "./db-DhOfeXX5.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -249,7 +249,7 @@ ${context ? `附加说明：${context}` : ""}
 		if (req.method === "POST" && path === "/company/api/goals") {
 			const { title, description, quarter } = await parseBody(req);
 			if (!title) return json(res, { error: "title is required" }, 400);
-			const { insertGoal } = await import("./db-BMjF42bt.js").then((n) => n.t);
+			const { insertGoal } = await import("./db-DhOfeXX5.js").then((n) => n.t);
 			const goal = insertGoal(title, description ?? "", quarter ?? "");
 			ctx.decomposGoal(goal.title, goal.description ?? "").catch(() => void 0);
 			return json(res, {
@@ -442,7 +442,7 @@ ${employeeList}
     ...
   ]
 }`;
-	const { insertGoalTask, updateGoalTaskStatus } = await import("./db-BMjF42bt.js").then((n) => n.t);
+	const { insertGoalTask, updateGoalTaskStatus } = await import("./db-DhOfeXX5.js").then((n) => n.t);
 	const agentDir = join(homedir(), ".openclaw");
 	const workspaceDir = join(agentDir, "agents", "company-decomposer");
 	try {
@@ -568,7 +568,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 function getEmployeeIds() {
 	return new Set(getAllEmployees().map((e) => e.id));
 }
-var company_default = definePluginEntry({
+var openclaw_company_os_default = definePluginEntry({
 	id: "company",
 	name: "一人公司 OS",
 	description: "CEO + AI employee agent system",
@@ -796,4 +796,4 @@ const DEV_PLACEHOLDER_HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 //#endregion
-export { company_default as default };
+export { openclaw_company_os_default as default };
