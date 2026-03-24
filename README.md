@@ -23,10 +23,18 @@
 - [OpenClaw](https://openclaw.ai) 已安装并配置好 Anthropic API Key
 - OpenClaw 版本 `>= 2026.3.14`
 
-### 一键安装
+### 安装步骤
+
+**第一步：克隆仓库**
 
 ```bash
-openclaw plugins install git+https://github.com/wangwu50/openclaw-company-os.git
+git clone https://github.com/wangwu50/openclaw-company-os.git
+```
+
+**第二步：安装插件**
+
+```bash
+openclaw plugins install ./openclaw-company-os
 ```
 
 安装完成后重启网关：
