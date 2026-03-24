@@ -1,0 +1,26 @@
+{
+  "name": "openclaw-company-os",
+  "version": "0.1.0",
+  "description": "一人公司 OS — CEO + AI employee agents for OpenClaw",
+  "type": "module",
+  "peerDependencies": {
+    "openclaw": ">=2026.3.14"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "openclaw": "*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
