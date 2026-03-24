@@ -414,7 +414,8 @@ function WaveAnimation({ color }: { color: string }) {
 
 function ActivityFeed({ activity, emp }: { activity: ActivityEvent[]; emp: Employee }) {
   const [expanded, setExpanded] = useState(false);
-  const shown = expanded ? activity : activity.slice(0, 3);
+  const reversed = [...activity].reverse();
+  const shown = expanded ? reversed : reversed.slice(-3);
 
   return (
     <div
