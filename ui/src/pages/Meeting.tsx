@@ -64,50 +64,64 @@ export function Meeting({ employees }: MeetingProps) {
     setTopic("");
     setRunning(true);
 
-    // Send message to each employee in parallel (streaming)
-    await Promise.all(
-      employees.map(async (emp) => {
-        // Initialize with empty text so streaming can append
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.id === id
-              ? { ...s, replies: s.replies.map((r) => r.employeeId === emp.id ? { ...r, text: "" } : r) }
-              : s,
-          ),
-        );
-        try {
-          await streamChatWithEmployee(emp.id, text, (chunk) => {
-            setSessions((prev) =>
-              prev.map((s) =>
-                s.id === id
-                  ? {
-                      ...s,
-                      replies: s.replies.map((r) =>
-                        r.employeeId === emp.id ? { ...r, text: (r.text ?? "") + chunk } : r,
-                      ),
-                    }
-                  : s,
-              ),
-            );
-          });
-        } catch (e) {
+    // Send message to each employee serially so each can see prior replies
+    const priorReplies: Array<{ name: string; role: string; text: string }> = [];
+    for (const emp of employees) {
+      // Build context-aware prompt
+      let message: string;
+      if (priorReplies.length === 0) {
+        message = `全员会议议题：${text}\n\n你是第一位发言者，请给出你的看法和建议（3-5句话）。`;
+      } else {
+        const context = priorReplies
+          .map((r) => `${r.name}（${r.role}）：${r.text}`)
+          .join("\n\n");
+        message = `全员会议议题：${text}\n\n前面同事的发言：\n${context}\n\n请结合以上发言，给出你的补充或不同意见（3-5句话）。`;
+      }
+
+      // Mark this employee as now speaking (empty string = streaming)
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === id
+            ? { ...s, replies: s.replies.map((r) => r.employeeId === emp.id ? { ...r, text: "" } : r) }
+            : s,
+        ),
+      );
+
+      let fullText = "";
+      try {
+        await streamChatWithEmployee(emp.id, message, (chunk) => {
+          fullText += chunk;
           setSessions((prev) =>
             prev.map((s) =>
               s.id === id
                 ? {
                     ...s,
                     replies: s.replies.map((r) =>
-                      r.employeeId === emp.id
-                        ? { ...r, text: "", error: e instanceof Error ? e.message : String(e) }
-                        : r,
+                      r.employeeId === emp.id ? { ...r, text: (r.text ?? "") + chunk } : r,
                     ),
                   }
                 : s,
             ),
           );
-        }
-      }),
-    );
+        });
+        if (fullText) priorReplies.push({ name: emp.name, role: emp.role, text: fullText });
+      } catch (e) {
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === id
+              ? {
+                  ...s,
+                  replies: s.replies.map((r) =>
+                    r.employeeId === emp.id
+                      ? { ...r, text: "", error: e instanceof Error ? e.message : String(e) }
+                      : r,
+                  ),
+                }
+              : s,
+          ),
+        );
+      }
+    }
 
     setSessions((prev) =>
       prev.map((s) => (s.id === id ? { ...s, done: true } : s)),
@@ -420,7 +434,9 @@ function ActiveMeeting({
             </div>
 
             {/* Reply content */}
-            {(isPending || isStreaming) ? (
+            {isPending ? (
+              <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>等待发言…</span>
+            ) : isStreaming ? (
               <MiniWave color={emp.accentColor} />
             ) : isError ? (
               <p
