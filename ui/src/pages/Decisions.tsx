@@ -1,8 +1,23 @@
-import type { Decision } from "../types.js";
-import { useDecisions } from "../hooks/useApi.js";
+import type { Decision, Employee } from "../types.js";
+import { useDecisions, useDecisionStats } from "../hooks/useApi.js";
 
-export function Decisions() {
-  const { decisions, loading, error, query, setQuery } = useDecisions();
+const STATUS_OPTIONS = [
+  { value: "", label: "全部状态" },
+  { value: "pending", label: "待执行" },
+  { value: "in_progress", label: "进行中" },
+  { value: "done", label: "已完成" },
+  { value: "closed", label: "已关闭" },
+];
+
+type DecisionsProps = {
+  employees: Employee[];
+};
+
+export function Decisions({ employees }: DecisionsProps) {
+  const { decisions, loading, error, query, setQuery, employeeFilter, setEmployeeFilter, statusFilter, setStatusFilter } = useDecisions();
+  const stats = useDecisionStats();
+
+  const hasFilter = query.length > 0 || !!employeeFilter || !!statusFilter;
 
   return (
     <main
@@ -25,28 +40,84 @@ export function Decisions() {
           justifyContent: "space-between",
           alignItems: "center",
           gap: "var(--space-4)",
+          flexWrap: "wrap",
         }}
       >
         <h1 style={{ fontSize: "var(--text-xl)", fontWeight: 700 }}>
           决策台账
         </h1>
-        <input
-          type="search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="搜索决策…"
-          aria-label="搜索决策"
-          style={{
-            background: "var(--bg-card)",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius-sm)",
-            color: "var(--text-primary)",
-            fontSize: "var(--text-sm)",
-            padding: "var(--space-2) var(--space-3)",
-            outline: "none",
-            width: 220,
-          }}
-        />
+        <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center", flexWrap: "wrap" }}>
+          {/* 员工筛选 */}
+          <select
+            value={employeeFilter}
+            onChange={(e) => setEmployeeFilter(e.target.value)}
+            aria-label="按员工筛选"
+            style={selectStyle}
+          >
+            <option value="">全部员工</option>
+            {employees.map((e) => (
+              <option key={e.id} value={e.id}>{e.emoji} {e.name}</option>
+            ))}
+          </select>
+
+          {/* 状态筛选 */}
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            aria-label="按状态筛选"
+            style={selectStyle}
+          >
+            {STATUS_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+
+          {/* 文本搜索 */}
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="搜索决策…"
+            aria-label="搜索决策"
+            style={{
+              background: "var(--bg-card)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius-sm)",
+              color: "var(--text-primary)",
+              fontSize: "var(--text-sm)",
+              padding: "var(--space-2) var(--space-3)",
+              outline: "none",
+              width: 200,
+            }}
+          />
+        </div>
+      </div>
+
+      {/* 状态统计卡片（显示全局数量，不随筛选变化） */}
+      <div style={{ display: "flex", gap: "var(--space-3)", flexWrap: "wrap" }}>
+        {STATUS_OPTIONS.filter((o) => o.value).map((o) => {
+          const cfg = TAG_CONFIG[o.value] ?? TAG_CONFIG.closed;
+          return (
+            <div
+              key={o.value}
+              style={{
+                background: cfg.bg,
+                border: `1px solid ${cfg.color}44`,
+                borderRadius: "var(--radius)",
+                padding: "var(--space-3) var(--space-4)",
+                minWidth: 90,
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+              }}
+            >
+              <span style={{ fontSize: "var(--text-xs)", color: cfg.color, fontWeight: 600 }}>{o.label}</span>
+              <span style={{ fontSize: "var(--text-xl)", fontWeight: 700, color: cfg.color, lineHeight: 1 }}>
+                {stats[o.value] ?? 0}
+              </span>
+            </div>
+          );
+        })}
       </div>
 
       {/* Content */}
@@ -59,7 +130,7 @@ export function Decisions() {
           加载失败：{error}
         </div>
       ) : decisions.length === 0 ? (
-        <EmptyDecisions hasQuery={query.length > 0} />
+        <EmptyDecisions hasFilter={hasFilter} />
       ) : (
         <DecisionTable decisions={decisions} />
       )}
@@ -67,7 +138,18 @@ export function Decisions() {
   );
 }
 
-function EmptyDecisions({ hasQuery }: { hasQuery: boolean }) {
+const selectStyle: React.CSSProperties = {
+  background: "var(--bg-card)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-sm)",
+  color: "var(--text-primary)",
+  fontSize: "var(--text-sm)",
+  padding: "var(--space-2) var(--space-3)",
+  outline: "none",
+  cursor: "pointer",
+};
+
+function EmptyDecisions({ hasFilter }: { hasFilter: boolean }) {
   return (
     <div
       style={{
@@ -81,7 +163,7 @@ function EmptyDecisions({ hasQuery }: { hasQuery: boolean }) {
     >
       <div style={{ fontSize: 40 }}>📋</div>
       <p style={{ fontSize: "var(--text-sm)", textAlign: "center" }}>
-        {hasQuery ? "没有匹配的决策记录" : "还没有决策记录"}
+        {hasFilter ? "没有匹配的决策记录" : "还没有决策记录"}
       </p>
     </div>
   );

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { ActivityEvent, Decision, HallData } from "../types.js";
+import type { ActivityEvent, Decision, EmployeeReport, HallData } from "../types.js";
 
 const BASE = "/company/api";
 
@@ -45,12 +45,18 @@ export function useDecisions() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [employeeFilter, setEmployeeFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
 
-  const search = useCallback(async (q: string) => {
+  const search = useCallback(async (q: string, employee: string, status: string) => {
     setLoading(true);
     try {
-      const url = q ? `${BASE}/decisions?q=${encodeURIComponent(q)}` : `${BASE}/decisions`;
-      const res = await fetchJson<{ decisions: Decision[] }>(url);
+      const params = new URLSearchParams();
+      if (q) params.set("q", q);
+      if (employee) params.set("employee", employee);
+      if (status) params.set("status", status);
+      const qs = params.toString();
+      const res = await fetchJson<{ decisions: Decision[] }>(`${BASE}/decisions${qs ? `?${qs}` : ""}`);
       setDecisions(res.decisions);
       setError(null);
     } catch (e) {
@@ -61,10 +67,22 @@ export function useDecisions() {
   }, []);
 
   useEffect(() => {
-    void search(query);
-  }, [query, search]);
+    void search(query, employeeFilter, statusFilter);
+  }, [query, employeeFilter, statusFilter, search]);
 
-  return { decisions, loading, error, query, setQuery };
+  return { decisions, loading, error, query, setQuery, employeeFilter, setEmployeeFilter, statusFilter, setStatusFilter };
+}
+
+export function useDecisionStats() {
+  const [stats, setStats] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    void fetchJson<{ stats: Record<string, number> }>(`${BASE}/decisions/stats`)
+      .then((res) => setStats(res.stats))
+      .catch(() => void 0);
+  }, []);
+
+  return stats;
 }
 
 export async function sendDecision(body: {
@@ -182,11 +200,14 @@ export async function deleteGoal(id: number): Promise<void> {
   await fetchJson(`${BASE}/goals/${id}`, { method: "DELETE" });
 }
 
-export async function updateTask(id: number, status: "pending" | "in_progress" | "done"): Promise<void> {
+export async function updateTask(
+  id: number,
+  fields: { status?: "pending" | "in_progress" | "done"; deadline?: string | null; priority?: string; extraGoalIds?: number[] | null },
+): Promise<void> {
   await fetchJson(`${BASE}/tasks/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ status }),
+    body: JSON.stringify(fields),
   });
 }
 
@@ -209,6 +230,11 @@ export async function createEmployee(emp: import("../types.js").Employee): Promi
 
 export async function deleteEmployee(id: string): Promise<void> {
   await fetchJson(`${BASE}/employees/${id}`, { method: "DELETE" });
+}
+
+export async function fetchReports(days: number): Promise<EmployeeReport[]> {
+  const res = await fetchJson<{ reports: EmployeeReport[] }>(`${BASE}/reports?days=${days}`);
+  return res.reports;
 }
 
 export function useActivity(refreshMs = 5_000) {

@@ -1,4 +1,4 @@
-import { C as updateGoal, S as updateDecisionTag, _ as insertCustomEmployee, a as findGoalTaskByTitle, b as insertReport, c as getDecisions, d as getEmployeeReports, f as getGoalTasks, g as insertActivity, h as getRecentReports, i as deletePendingDecision, l as getEmployeeActiveTasks, m as getRecentActivity, n as deleteCustomEmployee, o as getActiveGoals, p as getPendingDecisions, r as deleteGoal, s as getCustomEmployees, u as getEmployeeActivity, v as insertDecision, w as updateGoalTaskStatus, x as searchDecisions, y as insertPendingDecision } from "./db-DZOzUqJG.js";
+import { C as insertReport, D as updateGoalTask, E as updateGoal, O as updateGoalTaskStatus, S as insertPendingDecision, T as updateDecisionTag, _ as getRecentReports, a as findGoalTaskByTitle, b as insertCustomEmployee, c as getDecisionStats, d as getEmployeeActiveTasks, f as getEmployeeActivityForActiveGoals, g as getRecentActivity, h as getPendingDecisions, i as deletePendingDecision, l as getDecisions, m as getGoalTasks, n as deleteCustomEmployee, o as getActiveGoals, p as getEmployeeReports, r as deleteGoal, s as getCustomEmployees, u as getDecisionsFiltered, v as getReportsByDays, w as searchDecisions, x as insertDecision, y as insertActivity } from "./db-v3KNaPQv.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 * Each employee maps to a unique agentId and has a system prompt, emoji,
 * and accent color (for the SPA UI).
 */
+const COLLEAGUE_IDS = "company-pm / company-coo / company-eng / company-ops / company-mkt / company-fin";
 const EMPLOYEES = [
 	{
 		id: "company-pm",
@@ -24,9 +25,32 @@ const EMPLOYEES = [
 - 主动汇报：每天整理当前最重要的 3 件产品事项，以日报形式提交给 CEO。
 - 决策请求：当遇到优先级决策时，向 CEO 发起待决请求，提供背景 + A/B 选项。
 - 执行指令：CEO 下达指令后，将其分解为具体 story，并分配给工程团队。
-沟通风格：简洁、逻辑清晰，用数据说话，回复控制在 3-5 句话以内。`,
+沟通风格：简洁、逻辑清晰，用数据说话，回复控制在 3-5 句话以内。
+协作工具：当需要同事参与时，在回复中加 <触发协作 to="EMPLOYEE_ID" task="简要任务描述"/> 标签（最多触发一次），系统会自动通知该同事并将回复反馈给你。可用同事 ID：${COLLEAGUE_IDS}。`,
 		cronSchedule: "0 9 * * 1-5",
 		cronPrompt: "写一份进展汇报：当前最重要的 3 件产品事项，每条不超过 2 句话。用中文。以 [进展汇报] 开头。"
+	},
+	{
+		id: "company-coo",
+		name: "Jordan",
+		role: "COO/总监",
+		emoji: "🎯",
+		accentColor: "#3b82f6",
+		systemPrompt: `你是 Jordan，公司的 COO（首席运营官）/项目总监。
+你负责：统筹协调各部门工作、汇总团队进展、推进跨部门里程碑、向 CEO 提供全局决策建议。
+工作方式：
+- 主动汇报：每天汇总各员工进展，输出「进展 + 风险 + 下一步分工」给 CEO。
+- 决策请求：遇到跨部门资源冲突、优先级冲突或延期风险时，向 CEO 发起待决请求（背景 + A/B 方案）。
+- 执行指令：收到 CEO 指令后，拆解为可执行任务并明确责任人、截止时间和验收标准。
+沟通风格：全局视角、结论先行、突出阻塞和依赖，回复控制在 4-6 句话。
+管理工具：
+- 查询同事近期动态：<查同事 id="EMPLOYEE_ID"/>（例：<查同事 id="company-pm"/>）
+- 委托同事执行任务：<委托同事 id="EMPLOYEE_ID">任务内容</委托同事>
+- 分配任务给指定员工（支持按名字/角色/ID 查找）：<分配任务给:员工名或ID>任务内容</分配任务给>
+协作工具：如需快速拉同事协作，也可用 <触发协作 to="EMPLOYEE_ID" task="简要任务描述"/> 标签（最多触发一次）。
+可用同事 ID：${COLLEAGUE_IDS}。`,
+		cronSchedule: "0 13 * * 1-5",
+		cronPrompt: "先查询各员工最新动态，再写一份综合进展汇报：总体状态、关键风险、跨部门阻塞和下一步分工。用中文。以 [进展汇报] 开头。"
 	},
 	{
 		id: "company-eng",
@@ -40,7 +64,8 @@ const EMPLOYEES = [
 - 主动汇报：每天汇报工程进展（PR 合并、bug 修复、技术风险）。
 - 决策请求：技术选型、架构决策、资源分配需要 CEO 输入时，发起待决请求。
 - 执行指令：CEO 指令拆分为技术任务后，估算工期并开始执行。
-沟通风格：技术术语适度，对 CEO 用非技术语言解释，简洁直接。`,
+沟通风格：技术术语适度，对 CEO 用非技术语言解释，简洁直接。
+协作工具：当需要同事参与时，在回复中加 <触发协作 to="EMPLOYEE_ID" task="简要任务描述"/> 标签（最多触发一次），系统会自动通知该同事并将回复反馈给你。可用同事 ID：${COLLEAGUE_IDS}。`,
 		cronSchedule: "0 10 * * 1-5",
 		cronPrompt: "写一份进展汇报：昨日完成的任务、今日计划、当前阻塞项（如有）。用中文。以 [进展汇报] 开头。"
 	},
@@ -56,7 +81,8 @@ const EMPLOYEES = [
 - 主动汇报：每天汇报关键运营指标（DAU、转化率、推广效果）。
 - 决策请求：推广预算申请、渠道投放策略需要 CEO 审批时，发起待决请求。
 - 执行指令：执行 CEO 批准的推广计划，并跟踪效果反馈。
-沟通风格：数据导向，直接给出结论，避免废话。`,
+沟通风格：数据导向，直接给出结论，避免废话。
+协作工具：当需要同事参与时，在回复中加 <触发协作 to="EMPLOYEE_ID" task="简要任务描述"/> 标签（最多触发一次），系统会自动通知该同事并将回复反馈给你。可用同事 ID：${COLLEAGUE_IDS}。`,
 		cronSchedule: "0 11 * * 1-5",
 		cronPrompt: "写一份进展汇报：核心指标概览（DAU/新增/转化）、今日重点工作、数据异常（如有）。用中文。以 [进展汇报] 开头。"
 	},
@@ -72,7 +98,8 @@ const EMPLOYEES = [
 - 主动汇报：每天汇报市场动态、内容发布情况、竞品新消息。
 - 决策请求：重大内容方向、品牌决策需要 CEO 审批时，发起待决请求。
 - 执行指令：执行 CEO 确认的营销策略，并反馈效果。
-沟通风格：有创意感但不失重点，简洁，善用类比。`,
+沟通风格：有创意感但不失重点，简洁，善用类比。
+协作工具：当需要同事参与时，在回复中加 <触发协作 to="EMPLOYEE_ID" task="简要任务描述"/> 标签（最多触发一次），系统会自动通知该同事并将回复反馈给你。可用同事 ID：${COLLEAGUE_IDS}。`,
 		cronSchedule: "0 14 * * 1-5",
 		cronPrompt: "写一份进展汇报：竞品新动态（如有）、内容发布状态、下一步市场计划。用中文。以 [进展汇报] 开头。"
 	},
@@ -88,7 +115,8 @@ const EMPLOYEES = [
 - 主动汇报：每周汇报支出概览和 runway（每周一）。
 - 决策请求：超出预算的支出申请需要 CEO 批准，发起待决请求。
 - 执行指令：执行 CEO 批准的预算调整。
-沟通风格：数字精确，控制在 3 句话内，附上具体金额。`,
+沟通风格：数字精确，控制在 3 句话内，附上具体金额。
+协作工具：当需要同事参与时，在回复中加 <触发协作 to="EMPLOYEE_ID" task="简要任务描述"/> 标签（最多触发一次），系统会自动通知该同事并将回复反馈给你。可用同事 ID：${COLLEAGUE_IDS}。`,
 		cronSchedule: "0 9 * * 1",
 		cronPrompt: "写一份进展汇报：本周总支出、当前 runway 估算、需要注意的成本异常。用中文。以 [进展汇报] 开头。"
 	}
@@ -167,11 +195,23 @@ async function handleApiRequest(ctx) {
 				isCustom: customIds.has(e.id)
 			})) });
 		}
+		if (req.method === "GET" && path === "/company/api/decisions/stats") return json(res, { stats: getDecisionStats() });
 		if (req.method === "GET" && path === "/company/api/decisions") {
 			const q = url.searchParams.get("q");
+			const employee = url.searchParams.get("employee") ?? "";
+			const status = url.searchParams.get("status") ?? "";
 			const limit = Number(url.searchParams.get("limit") ?? "50");
 			const offset = Number(url.searchParams.get("offset") ?? "0");
-			return json(res, { decisions: q ? searchDecisions(q) : getDecisions(limit, offset) });
+			let decisions;
+			if (q) decisions = searchDecisions(q);
+			else if (employee || status) decisions = getDecisionsFiltered({
+				employeeId: employee || void 0,
+				status: status || void 0,
+				limit,
+				offset
+			});
+			else decisions = getDecisions(limit, offset);
+			return json(res, { decisions });
 		}
 		if (req.method === "POST" && path === "/company/api/decisions") {
 			const { pendingId, employeeId, summary, choice, context } = await parseBody(req);
@@ -210,11 +250,15 @@ ${context ? `附加说明：${context}` : ""}
 			return json(res, { decision });
 		}
 		if (req.method === "POST" && path === "/company/api/decisions/pending") {
-			const { employeeId, background, optionA, optionB } = await parseBody(req);
+			const { employeeId, background, optionA, optionB, options } = await parseBody(req);
 			if (!employeeId || !background || !optionA) return json(res, { error: "employeeId, background, optionA are required" }, 400);
-			const pending = insertPendingDecision(employeeId, background, optionA, optionB);
-			insertActivity(employeeId, "pending_decision", `[待决] ${background}（${optionB ? `选A: ${optionA} | 选B: ${optionB}` : optionA}）`);
+			const pending = insertPendingDecision(employeeId, background, optionA, optionB, options);
+			insertActivity(employeeId, "pending_decision", `[待决] ${background}（${options && options.length >= 2 ? options.join(" | ") : optionB ? `选A: ${optionA} | 选B: ${optionB}` : optionA}）`);
 			return json(res, { pending });
+		}
+		if (req.method === "GET" && path === "/company/api/reports") {
+			if (url.searchParams.has("days")) return json(res, { reports: getReportsByDays(Math.min(Math.max(Number(url.searchParams.get("days") ?? "7"), 1), 30)) });
+			return json(res, { reports: getRecentReports(Number(url.searchParams.get("limit") ?? "30")) });
 		}
 		if (req.method === "GET" && path === "/company/api/activity") return json(res, { activity: getRecentActivity(Number(url.searchParams.get("limit") ?? "60")) });
 		if (req.method === "POST" && path.match(/^\/company\/api\/chat\/[^/]+\/stream$/)) {
@@ -252,7 +296,7 @@ ${context ? `附加说明：${context}` : ""}
 		if (req.method === "POST" && path === "/company/api/goals") {
 			const { title, description, quarter } = await parseBody(req);
 			if (!title) return json(res, { error: "title is required" }, 400);
-			const { insertGoal } = await import("./db-DZOzUqJG.js").then((n) => n.t);
+			const { insertGoal } = await import("./db-v3KNaPQv.js").then((n) => n.t);
 			const goal = insertGoal(title, description ?? "", quarter ?? "");
 			ctx.decomposGoal(goal.title, goal.description ?? "").catch(() => void 0);
 			return json(res, {
@@ -273,13 +317,26 @@ ${context ? `附加说明：${context}` : ""}
 		}
 		if (req.method === "PATCH" && /^\/company\/api\/tasks\/\d+$/.test(path)) {
 			const id = Number(path.split("/").pop());
-			const { status } = await parseBody(req);
-			if (![
+			const { status, deadline, priority, extraGoalIds } = await parseBody(req);
+			if (status !== void 0 && ![
 				"pending",
 				"in_progress",
 				"done"
 			].includes(status)) return json(res, { error: "status must be pending | in_progress | done" }, 400);
-			updateGoalTaskStatus(id, status);
+			if (priority !== void 0 && ![
+				"low",
+				"normal",
+				"high"
+			].includes(priority)) return json(res, { error: "priority must be low | normal | high" }, 400);
+			if (extraGoalIds !== void 0 && extraGoalIds !== null) {
+				if (!Array.isArray(extraGoalIds) || !extraGoalIds.every((x) => typeof x === "number")) return json(res, { error: "extraGoalIds must be an array of numbers or null" }, 400);
+			}
+			updateGoalTask(id, {
+				...status !== void 0 && { status },
+				...deadline !== void 0 && { deadline },
+				...priority !== void 0 && { priority },
+				...extraGoalIds !== void 0 && { extraGoalIds: extraGoalIds === null ? null : extraGoalIds }
+			});
 			return json(res, { ok: true });
 		}
 		if (req.method === "POST" && path === "/company/api/employees/generate") {
@@ -299,6 +356,12 @@ ${context ? `附加说明：${context}` : ""}
 				system_prompt: systemPrompt ?? "",
 				cron_schedule: cronSchedule ?? "0 10 * * 1-5",
 				cron_prompt: cronPrompt ?? ""
+			});
+			const onboardingPrompt = `你刚刚加入公司，角色是${role}。请做一个简短的自我介绍（2-3句），并说明你将如何为公司创造价值。以「[入职] 」开头。`;
+			setImmediate(() => {
+				ctx.runAgent(id, onboardingPrompt).then((reply) => {
+					if (reply) insertActivity(id, "task_response", reply);
+				}).catch(() => void 0);
 			});
 			return json(res, { ok: true });
 		}
@@ -326,6 +389,10 @@ function resolveAgentModel(config) {
 	};
 }
 const COLLEAGUE_QUERY_RE = /<查同事\s+id="([^"]+)"(?:\s+limit="(\d+)")?\s*\/>/;
+const COLLAB_TRIGGER_RE = /<触发协作\s+to="([^"]+)"\s+task="([^"]+)"\s*\/>/;
+const DELEGATE_COLLEAGUE_RE = /<委托同事\s+id="([^"]+)">([\s\S]*?)<\/委托同事>/;
+const ASSIGN_TASK_RE = /<分配任务给:([^>]+)>([\s\S]*?)<\/分配任务给>/;
+const DECISION_REQUEST_RE = /<需要决策\s+options="([^"]+)">([\s\S]*?)<\/需要决策>/;
 /**
 * Run an agent call for a company employee, supporting multi-turn tool use.
 * The employee can call `get_colleague_activity` to look up a peer's recent
@@ -334,8 +401,9 @@ const COLLEAGUE_QUERY_RE = /<查同事\s+id="([^"]+)"(?:\s+limit="(\d+)")?\s*\/>
 *
 * Session key is stable per employee so memory persists across calls.
 */
-async function runEmployeeAgent(employeeId, prompt, deps, onChunk) {
-	if (!getAnyEmployee(employeeId)) throw new Error(`Unknown employee: ${employeeId}`);
+async function runEmployeeAgent(employeeId, prompt, deps, onChunk, depth = 0) {
+	const employee = getAnyEmployee(employeeId);
+	if (!employee) throw new Error(`Unknown employee: ${employeeId}`);
 	const agentDir = join(homedir(), ".openclaw");
 	const workspaceDir = join(agentDir, "agents", employeeId);
 	const baseParams = {
@@ -365,14 +433,84 @@ async function runEmployeeAgent(employeeId, prompt, deps, onChunk) {
 			prompt: currentPrompt
 		}))?.payloads ?? []].reverse().find((p) => p.text?.trim())?.text ?? "";
 		if (text) lastText = text;
-		const match = COLLEAGUE_QUERY_RE.exec(lastText);
-		if (!match) break;
-		const colleagueId = match[1];
-		const limit = Math.min(Number(match[2] ?? "5"), 10);
-		const activity = getEmployeeActivity(colleagueId, limit);
-		const colleague = getAnyEmployee(colleagueId);
-		const collegeName = colleague ? `${colleague.name}（${colleague.role}）` : colleagueId;
-		currentPrompt = `[同事动态] ${collegeName} 的最新 ${limit} 条记录：\n\n${activity.length > 0 ? activity.map((a) => `[${a.event_type}] ${a.created_at}\n${a.content}`).join("\n\n---\n\n") : `${collegeName} 暂无近期动态`}\n\n请基于以上信息继续完成任务。`;
+		const queryMatch = COLLEAGUE_QUERY_RE.exec(lastText);
+		if (queryMatch) {
+			const colleagueId = queryMatch[1];
+			const limit = Math.min(Number(queryMatch[2] ?? "5"), 10);
+			const activity = getEmployeeActivityForActiveGoals(colleagueId, limit);
+			const colleague = getAnyEmployee(colleagueId);
+			const collegeName = colleague ? `${colleague.name}（${colleague.role}）` : colleagueId;
+			currentPrompt = `[同事动态] ${collegeName} 的最新 ${limit} 条记录：\n\n${activity.length > 0 ? activity.map((a) => `[${a.event_type}] ${a.created_at}\n${a.content}`).join("\n\n---\n\n") : `${collegeName} 暂无近期动态`}\n\n请基于以上信息继续完成任务。`;
+			continue;
+		}
+		if (depth === 0) {
+			const collabMatch = COLLAB_TRIGGER_RE.exec(lastText);
+			if (collabMatch) {
+				const targetId = collabMatch[1];
+				const task = collabMatch[2];
+				const targetEmployee = getAnyEmployee(targetId);
+				if (targetEmployee) {
+					const sourceName = `${employee.name}（${employee.role}）`;
+					const targetName = `${targetEmployee.name}（${targetEmployee.role}）`;
+					const collabPrompt = `「${sourceName}」请求协作：${task}\n\n请基于你的职能给出具体建议（3-5句）。`;
+					insertActivity(targetId, "task_assigned", `[协作请求] ${sourceName} 邀请协作：${task}`);
+					try {
+						const collabReply = await runEmployeeAgent(targetId, collabPrompt, deps, void 0, 1);
+						if (collabReply) {
+							insertActivity(targetId, "task_response", `[协作回复] ${targetName}：${collabReply}`);
+							currentPrompt = `[协作回复] ${targetName} 的回复：\n${collabReply}\n\n请基于以上协作意见继续完成任务。`;
+							continue;
+						}
+					} catch {}
+				}
+			}
+		}
+		if (depth === 0) {
+			const delegateMatch = DELEGATE_COLLEAGUE_RE.exec(lastText);
+			if (delegateMatch) {
+				const toId = delegateMatch[1];
+				const message = delegateMatch[2].trim();
+				try {
+					const reply = await runEmployeeAgent(toId, message, deps, void 0, 1);
+					if (reply) {
+						insertActivity(toId, "task_response", reply, { delegatedBy: employeeId });
+						insertActivity(employeeId, "task_response", `已委托 ${toId}：${message}`, { delegateTo: toId });
+					}
+				} catch {}
+				break;
+			}
+		}
+		if (depth === 0) {
+			const assignMatch = ASSIGN_TASK_RE.exec(lastText);
+			if (assignMatch) {
+				const targetNameOrId = assignMatch[1].trim();
+				const taskContent = assignMatch[2].trim();
+				const allEmps = getAllEmployees();
+				const targetEmployee = allEmps.find((e) => e.id === targetNameOrId) ?? allEmps.find((e) => e.name === targetNameOrId) ?? allEmps.find((e) => e.role === targetNameOrId);
+				if (targetEmployee) {
+					const targetId = targetEmployee.id;
+					insertActivity(targetId, "task_assigned", taskContent, { assignedBy: employeeId });
+					try {
+						const reply = await runEmployeeAgent(targetId, taskContent, deps, void 0, 1);
+						if (reply) insertActivity(targetId, "task_response", reply, { assignedBy: employeeId });
+					} catch {}
+				}
+				break;
+			}
+		}
+		if (depth === 0) {
+			const decisionMatch = DECISION_REQUEST_RE.exec(lastText);
+			if (decisionMatch) {
+				const options = decisionMatch[1].split("|").map((s) => s.trim()).filter(Boolean);
+				const background = decisionMatch[2].trim();
+				if (options.length >= 2) {
+					insertPendingDecision(employeeId, background, options[0], options[1], options);
+					insertActivity(employeeId, "pending_decision", `[待决] ${background}（${options.join(" | ")}）`);
+				}
+				break;
+			}
+		}
+		break;
 	}
 	return lastText;
 }
@@ -455,9 +593,9 @@ ${employeeList}
     ...
   ]
 }`;
-	const { insertGoalTask, updateGoalTaskStatus } = await import("./db-DZOzUqJG.js").then((n) => n.t);
+	const { insertGoalTask, updateGoalTaskStatus } = await import("./db-v3KNaPQv.js").then((n) => n.t);
 	const agentDir = join(homedir(), ".openclaw");
-	const workspaceDir = join(agentDir, "agents", "company-decomposer");
+	const workspaceDir = join(agentDir, "agents", "company-decomposer", `goal-${goalId}`);
 	try {
 		const match = ([...(await deps.runEmbeddedPiAgent({
 			sessionId: `decompose-${randomUUID()}`,
@@ -474,8 +612,7 @@ ${employeeList}
 			disableTools: true,
 			runId: randomUUID(),
 			timeoutMs: 12e4,
-			provider: "anthropic",
-			model: "ppio/pa/claude-sonnet-4-6"
+			...resolveAgentModel(deps.config)
 		}))?.payloads ?? []].reverse().find((p) => p.text?.trim())?.text ?? "").match(/\{[\s\S]*\}/);
 		if (!match) return;
 		const parsed = JSON.parse(match[0]);

@@ -22,6 +22,9 @@ export type GoalTask = {
   employee_id: string;
   title: string;
   status: "pending" | "in_progress" | "done";
+  deadline: string | null;
+  priority: "low" | "normal" | "high";
+  extra_goal_ids: string | null;
 };
 
 export type PendingDecision = {
@@ -30,6 +33,7 @@ export type PendingDecision = {
   background: string;
   option_a: string;
   option_b: string | null;
+  options: string | null;
   created_at: string;
 };
 

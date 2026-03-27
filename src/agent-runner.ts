@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { getAnyEmployee, getAllEmployees } from "./employees.js";
-import { insertReport, insertActivity, getEmployeeActiveTasks, getEmployeeActivity } from "./db.js";
+import { insertReport, insertActivity, getEmployeeActiveTasks, getEmployeeActivityForActiveGoals, insertPendingDecision } from "./db.js";
 
 type RunAgentDeps = {
   runEmbeddedPiAgent: (
@@ -36,6 +36,26 @@ function resolveAgentModel(config: OpenClawConfig): { provider?: string; model?:
 // Format: <查同事 id="company-pm"/> or <查同事 id="company-pm" limit="8"/>
 const COLLEAGUE_QUERY_RE = /<查同事\s+id="([^"]+)"(?:\s+limit="(\d+)")?\s*\/>/;
 
+// Pattern the LLM outputs when it wants to trigger collaboration with a colleague.
+// Format: <触发协作 to="company-eng" task="任务描述"/>
+// Only processed at depth=0 to prevent recursive collaboration chains.
+const COLLAB_TRIGGER_RE = /<触发协作\s+to="([^"]+)"\s+task="([^"]+)"\s*\/>/;
+
+// Pattern the LLM outputs when it wants to delegate a task directly to a colleague.
+// Format: <委托同事 id="company-eng">具体委托内容</委托同事>
+// Only processed at depth=0 to prevent recursive delegation chains.
+const DELEGATE_COLLEAGUE_RE = /<委托同事\s+id="([^"]+)">([\s\S]*?)<\/委托同事>/;
+
+// Pattern the LLM outputs when it wants to assign a task to a colleague by name/role/id.
+// Format: <分配任务给:员工名或ID>任务内容</分配任务给>
+// Only processed at depth=0 to prevent recursive assignment chains.
+const ASSIGN_TASK_RE = /<分配任务给:([^>]+)>([\s\S]*?)<\/分配任务给>/;
+
+// Pattern the LLM outputs when it wants to submit a multi-option decision request to the CEO.
+// Format: <需要决策 options="方案A|方案B|方案C">背景说明</需要决策>
+// Only processed at depth=0.
+const DECISION_REQUEST_RE = /<需要决策\s+options="([^"]+)">([\s\S]*?)<\/需要决策>/;
+
 /**
  * Run an agent call for a company employee, supporting multi-turn tool use.
  * The employee can call `get_colleague_activity` to look up a peer's recent
@@ -49,6 +69,7 @@ export async function runEmployeeAgent(
   prompt: string,
   deps: RunAgentDeps,
   onChunk?: (text: string) => void,
+  depth = 0,
 ): Promise<string> {
   const employee = getAnyEmployee(employeeId);
   if (!employee) throw new Error(`Unknown employee: ${employeeId}`);
@@ -95,25 +116,125 @@ export async function runEmployeeAgent(
     const text = [...payloads].reverse().find((p) => p.text?.trim())?.text ?? "";
     if (text) lastText = text;
 
-    // Detect <查同事 id="company-pm"/> tag — LLM autonomously requests colleague data
-    const match = COLLEAGUE_QUERY_RE.exec(lastText);
-    if (!match) break; // no query tag → done
+    // ① Detect <查同事 id="company-pm"/> tag — LLM autonomously requests colleague data
+    const queryMatch = COLLEAGUE_QUERY_RE.exec(lastText);
+    if (queryMatch) {
+      const colleagueId = queryMatch[1];
+      const limit = Math.min(Number(queryMatch[2] ?? "5"), 10);
+      const activity = getEmployeeActivityForActiveGoals(colleagueId, limit);
+      const colleague = getAnyEmployee(colleagueId);
+      const collegeName = colleague ? `${colleague.name}（${colleague.role}）` : colleagueId;
 
-    const colleagueId = match[1];
-    const limit = Math.min(Number(match[2] ?? "5"), 10);
-    const activity = getEmployeeActivity(colleagueId, limit);
-    const colleague = getAnyEmployee(colleagueId);
-    const collegeName = colleague ? `${colleague.name}（${colleague.role}）` : colleagueId;
+      const dataBlock =
+        activity.length > 0
+          ? activity
+              .map((a) => `[${a.event_type}] ${a.created_at}\n${a.content}`)
+              .join("\n\n---\n\n")
+          : `${collegeName} 暂无近期动态`;
 
-    const dataBlock =
-      activity.length > 0
-        ? activity
-            .map((a) => `[${a.event_type}] ${a.created_at}\n${a.content}`)
-            .join("\n\n---\n\n")
-        : `${collegeName} 暂无近期动态`;
+      // Feed real data back; same sessionKey carries conversation history
+      currentPrompt = `[同事动态] ${collegeName} 的最新 ${limit} 条记录：\n\n${dataBlock}\n\n请基于以上信息继续完成任务。`;
+      continue;
+    }
 
-    // Feed real data back; same sessionKey carries conversation history
-    currentPrompt = `[同事动态] ${collegeName} 的最新 ${limit} 条记录：\n\n${dataBlock}\n\n请基于以上信息继续完成任务。`;
+    // ② Detect <触发协作 to="TARGET_ID" task="TASK"/> — LLM triggers peer collaboration
+    // 仅在 depth=0 时处理，防止被协作方再次触发，形成无限递归
+    if (depth === 0) {
+      const collabMatch = COLLAB_TRIGGER_RE.exec(lastText);
+      if (collabMatch) {
+        const targetId = collabMatch[1];
+        const task = collabMatch[2];
+        const targetEmployee = getAnyEmployee(targetId);
+
+        if (targetEmployee) {
+          const sourceName = `${employee.name}（${employee.role}）`;
+          const targetName = `${targetEmployee.name}（${targetEmployee.role}）`;
+          const collabPrompt = `「${sourceName}」请求协作：${task}\n\n请基于你的职能给出具体建议（3-5句）。`;
+
+          // 记录协作请求到活动日志
+          insertActivity(targetId, "task_assigned", `[协作请求] ${sourceName} 邀请协作：${task}`);
+
+          try {
+            const collabReply = await runEmployeeAgent(targetId, collabPrompt, deps, undefined, 1);
+            if (collabReply) {
+              insertActivity(targetId, "task_response", `[协作回复] ${targetName}：${collabReply}`);
+              // 将协作回复注入当前员工的下一轮提示
+              currentPrompt = `[协作回复] ${targetName} 的回复：\n${collabReply}\n\n请基于以上协作意见继续完成任务。`;
+              continue;
+            }
+          } catch {
+            // 协作调用失败时静默跳过，不影响主流程
+          }
+        }
+        // 目标员工不存在或协作失败，视为无标签，退出循环
+      }
+    }
+
+    // ③ Detect <委托同事 id="TARGET_ID">message</委托同事> — delegate a task directly to a colleague
+    // 仅在 depth=0 时处理，防止被委托方再次触发，形成无限递归
+    if (depth === 0) {
+      const delegateMatch = DELEGATE_COLLEAGUE_RE.exec(lastText);
+      if (delegateMatch) {
+        const toId = delegateMatch[1];
+        const message = delegateMatch[2].trim();
+        try {
+          const reply = await runEmployeeAgent(toId, message, deps, undefined, 1);
+          if (reply) {
+            insertActivity(toId, "task_response", reply, { delegatedBy: employeeId });
+            insertActivity(employeeId, "task_response", `已委托 ${toId}：${message}`, { delegateTo: toId });
+          }
+        } catch {
+          // 目标员工不存在或调用失败时静默忽略，不影响主流程
+        }
+        break;
+      }
+    }
+
+    // ④ Detect <分配任务给:员工名或ID>任务内容</分配任务给> — COO/supervisor assigns task to a colleague
+    // 仅在 depth=0 时处理，防止被分配方再次触发，形成无限递归
+    // 支持按 id / 名字 / 角色三种方式查找目标员工
+    if (depth === 0) {
+      const assignMatch = ASSIGN_TASK_RE.exec(lastText);
+      if (assignMatch) {
+        const targetNameOrId = assignMatch[1].trim();
+        const taskContent = assignMatch[2].trim();
+        const allEmps = getAllEmployees();
+        const targetEmployee =
+          allEmps.find((e) => e.id === targetNameOrId) ??
+          allEmps.find((e) => e.name === targetNameOrId) ??
+          allEmps.find((e) => e.role === targetNameOrId);
+        if (targetEmployee) {
+          const targetId = targetEmployee.id;
+          insertActivity(targetId, "task_assigned", taskContent, { assignedBy: employeeId });
+          try {
+            const reply = await runEmployeeAgent(targetId, taskContent, deps, undefined, 1);
+            if (reply) {
+              insertActivity(targetId, "task_response", reply, { assignedBy: employeeId });
+            }
+          } catch {
+            // 目标员工调用失败时静默忽略，不影响主流程
+          }
+        }
+        break;
+      }
+    }
+
+    // ⑤ Detect <需要决策 options="A|B|C">背景</需要决策> — employee submits multi-option decision request
+    // Only processed at depth=0.
+    if (depth === 0) {
+      const decisionMatch = DECISION_REQUEST_RE.exec(lastText);
+      if (decisionMatch) {
+        const options = decisionMatch[1].split("|").map((s) => s.trim()).filter(Boolean);
+        const background = decisionMatch[2].trim();
+        if (options.length >= 2) {
+          insertPendingDecision(employeeId, background, options[0], options[1], options);
+          insertActivity(employeeId, "pending_decision", `[待决] ${background}（${options.join(" | ")}）`);
+        }
+        break;
+      }
+    }
+
+    break; // 无任何工具标签 → 完成
   }
 
   return lastText;
@@ -236,7 +357,9 @@ ${employeeList}
 
   const { insertGoalTask, updateGoalTaskStatus } = await import("./db.js");
   const agentDir = join(homedir(), ".openclaw");
-  const workspaceDir = join(agentDir, "agents", "company-decomposer");
+  // Use a per-goal workspaceDir so each decomposition starts with a clean context
+  // and doesn't inherit growing history from previous goals.
+  const workspaceDir = join(agentDir, "agents", "company-decomposer", `goal-${goalId}`);
 
   try {
     const result = await deps.runEmbeddedPiAgent({
@@ -254,8 +377,7 @@ ${employeeList}
       disableTools: true,
       runId: randomUUID(),
       timeoutMs: 120_000, // 2 minutes for decomposition
-      provider: "anthropic",
-      model: "ppio/pa/claude-sonnet-4-6",
+      ...resolveAgentModel(deps.config),
     });
 
     // Extract text from payloads (same as runEmployeeAgent)

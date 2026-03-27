@@ -97,6 +97,23 @@ export function Team({ data }: TeamProps) {
                   </div>
                   <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>{emp.role}</div>
                 </div>
+                {/* NEW badge — 自定义员工且尚无任何活动记录时显示 */}
+                {emp.isCustom && recentActivity.length === 0 && (
+                  <span
+                    style={{
+                      fontSize: 10,
+                      background: `${emp.accentColor}22`,
+                      color: "var(--accent-agent)",
+                      border: "1px solid var(--accent-agent)",
+                      borderRadius: 10,
+                      padding: "1px 7px",
+                      whiteSpace: "nowrap",
+                      fontWeight: 600,
+                    }}
+                  >
+                    NEW
+                  </span>
+                )}
                 {/* Status pill */}
                 <StatusPill tasks={tasks} />
               </div>

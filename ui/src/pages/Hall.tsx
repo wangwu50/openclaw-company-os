@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import type { ActivityEvent, HallData, PendingDecision } from "../types.js";
-import { sendDecision, setGoal, updateGoal, deleteGoal, updateTask, useActivity } from "../hooks/useApi.js";
+import type { ActivityEvent, EmployeeReport, HallData, PendingDecision } from "../types.js";
+import { sendDecision, setGoal, updateGoal, deleteGoal, updateTask, useActivity, fetchReports } from "../hooks/useApi.js";
+import { useNotification } from "../hooks/useNotification.js";
 
 type HallProps = {
   data: HallData;
@@ -24,9 +25,61 @@ const EVENT_LABELS: Record<string, string> = {
   decision_received: "确认决策",
 };
 
+// 生成员工报告汇总 Markdown，按员工分组（纯函数，无副作用）
+function exportReportsMd(reports: EmployeeReport[], employees: HallData["employees"], days: number): string {
+  const now = new Date().toLocaleString("zh-CN", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const rangeLabel = days === 1 ? "今日" : `近 ${days} 天`;
+  const lines: string[] = [`# 员工报告汇总（${rangeLabel}）`, ``, `导出时间：${now}`, ``];
+
+  // 按 employee_id 分组（保持首次出现顺序）
+  const grouped = new Map<string, EmployeeReport[]>();
+  for (const r of reports) {
+    if (!grouped.has(r.employee_id)) grouped.set(r.employee_id, []);
+    grouped.get(r.employee_id)!.push(r);
+  }
+
+  if (grouped.size === 0) {
+    lines.push("_暂无员工汇报记录_");
+  } else {
+    for (const [empId, empReports] of grouped) {
+      const emp = employees.find((e) => e.id === empId);
+      const empName = emp ? `${emp.emoji} ${emp.name}（${emp.role}）` : empId;
+      lines.push(`## ${empName}`, ``);
+      for (const r of empReports) {
+        // SQLite UTC 时间补 Z 后再格式化
+        const utcStr = r.created_at.includes("T") || r.created_at.endsWith("Z") ? r.created_at : r.created_at.replace(" ", "T") + "Z";
+        const dateLabel = new Date(utcStr).toLocaleString("zh-CN");
+        lines.push(`### ${dateLabel}`, ``, r.content, ``);
+      }
+    }
+  }
+
+  return lines.join("\n");
+}
+
 export function Hall({ data, onRefresh }: HallProps) {
   const activity = useActivity(4_000);
   const navigate = useNavigate();
+  const { notify } = useNotification();
+  const [reportDays, setReportDays] = useState<1 | 7>(7);
+  const [reportExportMd, setReportExportMd] = useState<string | null>(null);
+  // 追踪上一次的待决请求列表，用于检测新增项
+  const prevPendingRef = useRef<PendingDecision[]>([]);
+
+  useEffect(() => {
+    const prev = prevPendingRef.current;
+    const prevIds = new Set(prev.map((p) => p.id));
+    const newItems = data.pending.filter((p) => !prevIds.has(p.id));
+    if (newItems.length > 0) {
+      for (const item of newItems) {
+        const emp = data.employees.find((e) => e.id === item.employee_id);
+        const empName = emp ? `${emp.emoji} ${emp.name}` : item.employee_id;
+        notify("新待决请求", `${empName}：${item.background.slice(0, 50)}`);
+      }
+    }
+    prevPendingRef.current = data.pending;
+  }, [data.pending, data.employees, notify]);
+
   const today = new Date().toLocaleDateString("zh-CN", {
     year: "numeric",
     month: "long",
@@ -49,6 +102,26 @@ export function Hall({ data, onRefresh }: HallProps) {
   const latestByEmployee: Record<string, ActivityEvent> = {};
   for (const event of activity) {
     if (!latestByEmployee[event.employee_id]) latestByEmployee[event.employee_id] = event;
+  }
+
+  // 近 7 天汇报次数：统计 activity 中 event_type === 'report' 且在 7 天内的条数
+  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const reportCountByEmployee: Record<string, number> = {};
+  for (const event of activity) {
+    if (event.event_type !== "report") continue;
+    const utcStr = event.created_at.includes("T") || event.created_at.endsWith("Z") ? event.created_at : event.created_at.replace(" ", "T") + "Z";
+    if (new Date(utcStr).getTime() >= sevenDaysAgo) {
+      reportCountByEmployee[event.employee_id] = (reportCountByEmployee[event.employee_id] ?? 0) + 1;
+    }
+  }
+
+  // 任务完成率：从 tasksByEmployee 计算 done 数量和总数
+  const completionRateByEmployee: Record<string, { done: number; total: number }> = {};
+  for (const [empId, tasks] of Object.entries(tasksByEmployee)) {
+    completionRateByEmployee[empId] = {
+      done: tasks.filter((t) => t.status === "done").length,
+      total: tasks.length,
+    };
   }
 
   return (
@@ -107,7 +180,58 @@ export function Hall({ data, onRefresh }: HallProps) {
       >
         {/* LEFT: Activity feed */}
         <section aria-label="员工动态" style={{ minWidth: 0 }}>
-          <SectionLabel label="实时动态" />
+          {/* 实时动态标题行 + 报告导出控件 */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "var(--space-2)" }}>
+            <SectionLabel label="实时动态" />
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--space-1)" }}>
+              <select
+                value={reportDays}
+                onChange={(e) => setReportDays(Number(e.target.value) as 1 | 7)}
+                style={{
+                  background: "var(--bg-base)",
+                  border: "1px solid var(--border)",
+                  borderRadius: "var(--radius-sm)",
+                  color: "var(--text-secondary)",
+                  fontSize: "var(--text-xs)",
+                  padding: "2px 4px",
+                  cursor: "pointer",
+                  outline: "none",
+                }}
+              >
+                <option value={1}>今日</option>
+                <option value={7}>近7天</option>
+              </select>
+              <button
+                onClick={() => {
+                  void fetchReports(reportDays).then((reports) => {
+                    setReportExportMd(exportReportsMd(reports, data.employees, reportDays));
+                  });
+                }}
+                style={{
+                  background: "none",
+                  border: "1px solid var(--border)",
+                  borderRadius: "var(--radius-sm)",
+                  color: "var(--text-secondary)",
+                  fontSize: "var(--text-xs)",
+                  padding: "2px 8px",
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                导出报告
+              </button>
+            </div>
+          </div>
+
+          {/* 报告导出覆盖层 */}
+          {reportExportMd !== null && (
+            <ReportExportOverlay
+              markdown={reportExportMd}
+              days={reportDays}
+              onClose={() => setReportExportMd(null)}
+            />
+          )}
+
           <Card>
             {activity.length === 0 ? (
               <EmptyNote text="暂无员工动态，设置目标后员工会开始响应" />
@@ -138,6 +262,8 @@ export function Hall({ data, onRefresh }: HallProps) {
                   emp={emp}
                   tasks={tasksByEmployee[emp.id] ?? []}
                   latestEvent={latestByEmployee[emp.id]}
+                  reportCount={reportCountByEmployee[emp.id] ?? 0}
+                  completion={completionRateByEmployee[emp.id]}
                   onOpen={() => navigate(`/chat/${emp.id}`)}
                 />
               ))}
@@ -253,11 +379,15 @@ function EmployeeStatusCard({
   emp,
   tasks,
   latestEvent,
+  reportCount = 0,
+  completion,
   onOpen,
 }: {
   emp: HallData["employees"][0];
   tasks: HallData["goals"][0]["tasks"];
   latestEvent?: ActivityEvent;
+  reportCount?: number;
+  completion?: { done: number; total: number };
   onOpen: () => void;
 }) {
   const activeTasks = tasks.filter((t) => t.status !== "done");
@@ -324,6 +454,25 @@ function EmployeeStatusCard({
         </div>
       )}
 
+      {/* 活跃度指标：7天汇报次数 + 任务完成率（始终显示，无数据时也展示基准值） */}
+      <div style={{
+        fontSize: "var(--text-xs)",
+        color: "var(--text-muted)",
+        marginTop: "var(--space-1)",
+        marginBottom: activeTasks.length > 0 ? "var(--space-1)" : 0,
+      }}>
+        {"📊 7天 "}
+        {reportCount}
+        {"报"}
+        {completion && completion.total > 0 && (
+          <>
+            {" · 完成率 "}
+            {Math.round((completion.done / completion.total) * 100)}
+            {"%"}
+          </>
+        )}
+      </div>
+
       {/* Active tasks */}
       {activeTasks.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 2 }}>
@@ -360,6 +509,7 @@ function GoalsPanel({
   goals: HallData["goals"];
   onRefresh: () => void;
 }) {
+  const allGoals = goals;
   const [adding, setAdding] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [saving, setSaving] = useState(false);
@@ -438,7 +588,7 @@ function GoalsPanel({
           <EmptyNote text="尚未设置季度目标" />
         ) : (
           goals.map((g) => (
-            <GoalRow key={g.id} goal={g} onRefresh={onRefresh} />
+            <GoalRow key={g.id} goal={g} allGoals={allGoals} onRefresh={onRefresh} />
           ))
         )}
       </Card>
@@ -452,14 +602,29 @@ const TASK_STATUS_CYCLE: Record<string, "pending" | "in_progress" | "done"> = {
   done: "pending",
 };
 const TASK_STATUS_ICON: Record<string, string> = { pending: "⬜", in_progress: "🔄", done: "✅" };
+const PRIORITY_ICON: Record<string, string> = { high: "🔴", normal: "🟡", low: "🔵" };
+const PRIORITY_CYCLE: Record<string, "low" | "normal" | "high"> = { high: "normal", normal: "low", low: "high" };
 
-function GoalRow({ goal, onRefresh }: { goal: HallData["goals"][0]; onRefresh: () => void }) {
+function GoalRow({ goal, allGoals, onRefresh }: { goal: HallData["goals"][0]; allGoals: HallData["goals"]; onRefresh: () => void }) {
   const [editing, setEditing] = useState(false);
   const [expanded, setExpanded] = useState(true);
   const [title, setTitle] = useState(goal.title);
   const [saving, setSaving] = useState(false);
+  const [editingDeadlineId, setEditingDeadlineId] = useState<number | null>(null);
   const done = goal.tasks.filter((t) => t.status === "done").length;
   const pct = goal.tasks.length > 0 ? Math.round((done / goal.tasks.length) * 100) : 0;
+
+  const handlePriorityClick = async (taskId: number, currentPriority: string) => {
+    const next = PRIORITY_CYCLE[currentPriority] ?? "normal";
+    await updateTask(taskId, { priority: next });
+    onRefresh();
+  };
+
+  const handleDeadlineChange = async (taskId: number, value: string) => {
+    await updateTask(taskId, { deadline: value || null });
+    setEditingDeadlineId(null);
+    onRefresh();
+  };
 
   const handleSave = async () => {
     if (!title.trim()) return;
@@ -481,7 +646,7 @@ function GoalRow({ goal, onRefresh }: { goal: HallData["goals"][0]; onRefresh: (
 
   const handleTaskClick = async (taskId: number, currentStatus: string) => {
     const next = TASK_STATUS_CYCLE[currentStatus] ?? "pending";
-    await updateTask(taskId, next);
+    await updateTask(taskId, { status: next });
     onRefresh();
   };
 
@@ -540,37 +705,103 @@ function GoalRow({ goal, onRefresh }: { goal: HallData["goals"][0]; onRefresh: (
           {expanded && goal.tasks.length > 0 && (
             <div style={{ marginTop: "var(--space-2)", display: "flex", flexDirection: "column", gap: 4 }}>
               {goal.tasks.map((t) => (
-                <button
+                <div
                   key={t.id}
-                  onClick={() => void handleTaskClick(t.id, t.status)}
-                  title={`点击切换到：${TASK_STATUS_LABEL[TASK_STATUS_CYCLE[t.status] ?? "pending"]}`}
-                  style={{
-                    display: "flex",
-                    alignItems: "flex-start",
-                    gap: 6,
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                    padding: "2px 0",
-                    textAlign: "left",
-                    width: "100%",
-                  }}
+                  style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "10px" }}
                 >
-                  <span style={{ flexShrink: 0, fontSize: "12px", marginTop: 1 }}>
+                  {/* 状态切换按钮 */}
+                  <button
+                    onClick={() => void handleTaskClick(t.id, t.status)}
+                    title={`点击切换到：${TASK_STATUS_LABEL[TASK_STATUS_CYCLE[t.status] ?? "pending"]}`}
+                    style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: "12px", flexShrink: 0 }}
+                  >
                     {TASK_STATUS_ICON[t.status] ?? "⬜"}
-                  </span>
+                  </button>
+
+                  {/* 任务标题 + 员工 + 额外目标徽章 */}
                   <span style={{
-                    fontSize: "var(--text-xs)",
+                    flex: 1,
                     color: t.status === "done" ? "var(--text-muted)" : "var(--text-secondary)",
                     textDecoration: t.status === "done" ? "line-through" : "none",
                     lineHeight: "1.4",
+                    wordBreak: "break-word",
+                    fontSize: "var(--text-xs)",
                   }}>
                     {t.title}
                     <span style={{ color: "var(--text-muted)", marginLeft: 4 }}>
                       · {t.employee_id.replace("company-", "")}
                     </span>
+                    {(() => {
+                      if (!t.extra_goal_ids) return null;
+                      let ids: number[] = [];
+                      try { ids = JSON.parse(t.extra_goal_ids) as number[]; } catch { return null; }
+                      return ids.map((gid) => {
+                        const g = allGoals.find((ag) => ag.id === gid);
+                        if (!g) return null;
+                        return (
+                          <span
+                            key={gid}
+                            style={{
+                              marginLeft: 4,
+                              fontSize: "10px",
+                              background: "var(--accent-agent, #7b61ff)22",
+                              color: "var(--accent-agent, #7b61ff)",
+                              borderRadius: 4,
+                              padding: "0 4px",
+                              whiteSpace: "nowrap",
+                              display: "inline-block",
+                            }}
+                          >
+                            + {g.title.slice(0, 10)}
+                          </span>
+                        );
+                      });
+                    })()}
                   </span>
-                </button>
+
+                  {/* 优先级徽章，点击循环切换 */}
+                  <button
+                    onClick={() => void handlePriorityClick(t.id, t.priority ?? "normal")}
+                    title={`优先级：${t.priority ?? "normal"}，点击切换`}
+                    style={{ background: "none", border: "none", cursor: "pointer", padding: "0 2px", fontSize: "10px", flexShrink: 0, lineHeight: 1 }}
+                  >
+                    {PRIORITY_ICON[t.priority ?? "normal"]}
+                  </button>
+
+                  {/* 截止日期：点击切换为日期选择器 */}
+                  {editingDeadlineId === t.id ? (
+                    <input
+                      type="date"
+                      defaultValue={t.deadline ?? ""}
+                      autoFocus
+                      onBlur={(e) => void handleDeadlineChange(t.id, e.currentTarget.value)}
+                      onChange={(e) => void handleDeadlineChange(t.id, e.currentTarget.value)}
+                      style={{
+                        fontSize: "10px",
+                        background: "var(--bg-base)",
+                        border: "1px solid var(--border)",
+                        borderRadius: "var(--radius-sm)",
+                        color: "var(--text-primary)",
+                        padding: "1px 3px",
+                        width: 100,
+                        flexShrink: 0,
+                      }}
+                    />
+                  ) : (
+                    <span
+                      onClick={() => setEditingDeadlineId(t.id)}
+                      title="点击设置截止日期"
+                      style={{
+                        color: t.deadline ? "var(--text-secondary)" : "var(--text-muted)",
+                        cursor: "pointer",
+                        flexShrink: 0,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {t.deadline ? t.deadline : "📅"}
+                    </span>
+                  )}
+                </div>
               ))}
             </div>
           )}
@@ -633,24 +864,49 @@ function DecisionCard({
         {pending.background}
       </p>
 
-      <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
-        <button
-          onClick={() => void handleDecide("A", pending.option_a)}
-          disabled={submitting}
-          style={choiceButtonStyle("var(--accent-urgent)")}
-        >
-          走 A：{pending.option_a}
-        </button>
-        {pending.option_b && (
-          <button
-            onClick={() => void handleDecide("B", pending.option_b!)}
-            disabled={submitting}
-            style={choiceButtonStyle("var(--border)")}
-          >
-            走 B：{pending.option_b}
-          </button>
-        )}
-      </div>
+      {(() => {
+        const parsedOptions: string[] | null = (() => {
+          try {
+            const o = JSON.parse(pending.options ?? "") as unknown;
+            return Array.isArray(o) && (o as unknown[]).length >= 2 ? (o as string[]) : null;
+          } catch { return null; }
+        })();
+        return (
+          <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
+            {parsedOptions ? (
+              parsedOptions.map((opt, i) => (
+                <button
+                  key={i}
+                  onClick={() => void handleDecide(String(i + 1), opt)}
+                  disabled={submitting}
+                  style={choiceButtonStyle(i === 0 ? "var(--accent-urgent)" : "var(--border)")}
+                >
+                  {opt}
+                </button>
+              ))
+            ) : (
+              <>
+                <button
+                  onClick={() => void handleDecide("A", pending.option_a)}
+                  disabled={submitting}
+                  style={choiceButtonStyle("var(--accent-urgent)")}
+                >
+                  走 A：{pending.option_a}
+                </button>
+                {pending.option_b && (
+                  <button
+                    onClick={() => void handleDecide("B", pending.option_b!)}
+                    disabled={submitting}
+                    style={choiceButtonStyle("var(--border)")}
+                  >
+                    走 B：{pending.option_b}
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        );
+      })()}
 
       <div style={{ display: "flex", gap: "var(--space-2)" }}>
         <input
@@ -856,4 +1112,89 @@ function formatTimeAgo(dateStr: string): string {
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `${hrs}小时前`;
   return new Date(utcStr).toLocaleDateString("zh-CN");
+}
+
+function ReportExportOverlay({ markdown, days, onClose }: { markdown: string; days: number; onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(markdown);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleDownload = () => {
+    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `reports-${days === 1 ? "today" : `${days}days`}-${new Date().toISOString().slice(0, 10)}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.5)",
+        zIndex: 200,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "var(--space-6)",
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--bg-card)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius)",
+          padding: "var(--space-5)",
+          width: "100%",
+          maxWidth: 680,
+          maxHeight: "80vh",
+          display: "flex",
+          flexDirection: "column",
+          gap: "var(--space-3)",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ fontSize: "var(--text-sm)", fontWeight: 600 }}>
+            员工报告导出（{days === 1 ? "今日" : `近 ${days} 天`}）
+          </span>
+          <button onClick={onClose} style={{ ...iconBtnStyle, fontSize: "16px" }}>✕</button>
+        </div>
+        <textarea
+          readOnly
+          value={markdown}
+          style={{
+            flex: 1,
+            minHeight: 320,
+            background: "var(--bg-base)",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius-sm)",
+            color: "var(--text-primary)",
+            fontSize: "var(--text-xs)",
+            fontFamily: "monospace",
+            padding: "var(--space-3)",
+            resize: "vertical",
+            outline: "none",
+            lineHeight: "1.6",
+          }}
+        />
+        <div style={{ display: "flex", gap: "var(--space-2)", justifyContent: "flex-end" }}>
+          <button onClick={() => void handleCopy()} style={smallBtnStyle("var(--border)")}>
+            {copied ? "✓ 已复制" : "复制"}
+          </button>
+          <button onClick={handleDownload} style={smallBtnStyle("var(--accent-agent)")}>
+            下载 .md
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }

@@ -1,0 +1,114 @@
+{
+  "_roadmapMeta": {
+    "updatedAt": 1774530100804
+  },
+  "roadmap": {
+    "objective": "完善一人公司 OS — P2 体验增强 + N 专项修复",
+    "tasks": [
+      {
+        "id": 1,
+        "number": "P0-1",
+        "pinned": true,
+        "sortOrder": 1,
+        "status": "done",
+        "title": "浏览器通知：待决请求到达时主动推送 Notification"
+      },
+      {
+        "id": 2,
+        "number": "P0-2",
+        "pinned": true,
+        "sortOrder": 2,
+        "status": "done",
+        "title": "会议总结导出：全员会议结束后一键生成会议纪要"
+      },
+      {
+        "id": 3,
+        "number": "P0-3",
+        "pinned": true,
+        "sortOrder": 3,
+        "status": "done",
+        "title": "任务截止日期 & 优先级：goal_tasks 增加 deadline 和 priority 字段"
+      },
+      {
+        "id": 4,
+        "number": "P1-1",
+        "pinned": true,
+        "sortOrder": 4,
+        "status": "done",
+        "title": "员工间直接协作消息：支持主动触发同事参与任务"
+      },
+      {
+        "id": 5,
+        "number": "P1-2",
+        "pinned": true,
+        "sortOrder": 5,
+        "status": "done",
+        "title": "日报/周报导出：将员工报告汇总导出为 Markdown"
+      },
+      {
+        "id": 6,
+        "number": "P1-3",
+        "pinned": true,
+        "sortOrder": 6,
+        "status": "done",
+        "title": "决策台账过滤 & 统计：按员工/日期/状态过滤，汇总统计"
+      },
+      {
+        "id": 7,
+        "number": "P2-1",
+        "pinned": false,
+        "sortOrder": 7,
+        "status": "done",
+        "title": "员工活跃度看板：大厅各员工近期汇报频率和任务完成率可视化"
+      },
+      {
+        "id": 8,
+        "number": "P2-2",
+        "pinned": false,
+        "sortOrder": 8,
+        "status": "done",
+        "title": "自定义员工 Onboarding：添加后触发新手引导与首次汇报提示"
+      },
+      {
+        "id": 9,
+        "number": "P2-3",
+        "pinned": false,
+        "sortOrder": 9,
+        "status": "done",
+        "title": "多目标关联：一个任务支持跨目标关联"
+      },
+      {
+        "id": 10,
+        "number": "N-1",
+        "pinned": true,
+        "sortOrder": 10,
+        "status": "done",
+        "title": "目标隔离：employee agent 上下文只传入当前活跃目标关联数据"
+      },
+      {
+        "id": 11,
+        "number": "N-2",
+        "pinned": true,
+        "sortOrder": 11,
+        "status": "done",
+        "title": "多角色协作：添加员工界面增加角色模板快选，含协作工具说明"
+      },
+      {
+        "id": 12,
+        "number": "N-3",
+        "pinned": true,
+        "sortOrder": 12,
+        "status": "done",
+        "title": "统领角色（COO）：任务分配标签 + 进展汇总能力"
+      },
+      {
+        "id": 13,
+        "number": "N-4",
+        "pinned": true,
+        "sortOrder": 13,
+        "status": "done",
+        "title": "待决事项多选项：pending_decisions 支持员工自定义任意数量选项"
+      }
+    ]
+  }
+}

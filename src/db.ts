@@ -18,6 +18,9 @@ export type GoalTask = {
   employee_id: string;
   title: string;
   status: "pending" | "in_progress" | "done";
+  deadline: string | null;
+  priority: "low" | "normal" | "high";
+  extra_goal_ids: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -38,6 +41,7 @@ export type PendingDecision = {
   background: string;
   option_a: string;
   option_b: string | null;
+  options: string | null;
   created_at: string;
 };
 
@@ -147,6 +151,20 @@ export function getDb(): DatabaseSync {
     );
   `);
 
+  // 幂等地添加新列：SQLite 不支持 ADD COLUMN IF NOT EXISTS，用 try/catch 捕获重复列错误
+  for (const sql of [
+    "ALTER TABLE goal_tasks ADD COLUMN deadline TEXT",
+    "ALTER TABLE goal_tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'",
+    "ALTER TABLE goal_tasks ADD COLUMN extra_goal_ids TEXT",
+    "ALTER TABLE pending_decisions ADD COLUMN options TEXT",
+  ]) {
+    try {
+      db.exec(sql);
+    } catch (e) {
+      if (!(e instanceof Error) || !e.message.includes("duplicate column")) throw e;
+    }
+  }
+
   _db = db;
   return db;
 }
@@ -210,6 +228,27 @@ export function updateGoalTaskStatus(id: number, status: GoalTask["status"]): vo
     .run(status, id);
 }
 
+export function updateGoalTask(
+  id: number,
+  fields: { status?: GoalTask["status"]; deadline?: string | null; priority?: GoalTask["priority"]; extraGoalIds?: number[] | null },
+): void {
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  if (fields.status !== undefined) { sets.push("status = ?"); params.push(fields.status); }
+  if (fields.deadline !== undefined) { sets.push("deadline = ?"); params.push(fields.deadline); }
+  if (fields.priority !== undefined) { sets.push("priority = ?"); params.push(fields.priority); }
+  if (fields.extraGoalIds !== undefined) {
+    sets.push("extra_goal_ids = ?");
+    params.push(fields.extraGoalIds === null ? null : JSON.stringify(fields.extraGoalIds));
+  }
+  if (sets.length === 0) return;
+  sets.push("updated_at = datetime('now')");
+  params.push(id);
+  getDb()
+    .prepare(`UPDATE goal_tasks SET ${sets.join(", ")} WHERE id = ?`)
+    .run(...params);
+}
+
 export function findGoalTaskByTitle(employeeId: string, titleFragment: string): GoalTask | undefined {
   return getDb()
     .prepare(
@@ -230,12 +269,13 @@ export function insertPendingDecision(
   background: string,
   optionA: string,
   optionB?: string,
+  options?: string[],
 ): PendingDecision {
   return getDb()
     .prepare(
-      "INSERT INTO pending_decisions (employee_id, background, option_a, option_b) VALUES (?, ?, ?, ?) RETURNING *",
+      "INSERT INTO pending_decisions (employee_id, background, option_a, option_b, options) VALUES (?, ?, ?, ?, ?) RETURNING *",
     )
-    .get(employeeId, background, optionA, optionB ?? null) as PendingDecision;
+    .get(employeeId, background, optionA, optionB ?? null, options ? JSON.stringify(options) : null) as PendingDecision;
 }
 
 export function deletePendingDecision(id: number): void {
@@ -260,6 +300,31 @@ export function getDecisions(limit = 50, offset = 0): Decision[] {
   return getDb()
     .prepare("SELECT * FROM decisions ORDER BY created_at DESC LIMIT ? OFFSET ?")
     .all(limit, offset) as Decision[];
+}
+
+export function getDecisionsFiltered(opts: {
+  employeeId?: string;
+  status?: string;
+  limit?: number;
+  offset?: number;
+}): Decision[] {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (opts.employeeId) { conditions.push("employee_id = ?"); params.push(opts.employeeId); }
+  if (opts.status) { conditions.push("result_tag = ?"); params.push(opts.status); }
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  params.push(opts.limit ?? 50);
+  params.push(opts.offset ?? 0);
+  return getDb()
+    .prepare(`SELECT * FROM decisions ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .all(...params) as Decision[];
+}
+
+export function getDecisionStats(): Record<string, number> {
+  const rows = getDb()
+    .prepare("SELECT result_tag, COUNT(*) as cnt FROM decisions GROUP BY result_tag")
+    .all() as Array<{ result_tag: string; cnt: number }>;
+  return Object.fromEntries(rows.map((r) => [r.result_tag, r.cnt]));
 }
 
 export function searchDecisions(q: string): Decision[] {
@@ -288,6 +353,14 @@ export function getRecentReports(limit = 20): EmployeeReport[] {
   return getDb()
     .prepare("SELECT * FROM employee_reports ORDER BY created_at DESC LIMIT ?")
     .all(limit) as EmployeeReport[];
+}
+
+export function getReportsByDays(days: number): EmployeeReport[] {
+  return getDb()
+    .prepare(
+      "SELECT * FROM employee_reports WHERE created_at >= datetime('now', ? ) ORDER BY created_at DESC LIMIT 200",
+    )
+    .all(`-${days} days`) as EmployeeReport[];
 }
 
 export function getEmployeeReports(employeeId: string, limit = 10): EmployeeReport[] {
@@ -352,4 +425,17 @@ export function getEmployeeActivity(employeeId: string, limit = 5): ActivityEven
   return getDb()
     .prepare("SELECT * FROM activity_log WHERE employee_id = ? ORDER BY created_at DESC LIMIT ?")
     .all(employeeId, limit) as ActivityEvent[];
+}
+
+export function getEmployeeActivityForActiveGoals(employeeId: string, limit = 5): ActivityEvent[] {
+  const activeGoalIds = getActiveGoals().map((g) => g.id);
+  if (activeGoalIds.length === 0) {
+    return getEmployeeActivity(employeeId, limit);
+  }
+  const placeholders = activeGoalIds.map(() => "?").join(", ");
+  return getDb()
+    .prepare(
+      `SELECT * FROM activity_log WHERE employee_id = ? AND (meta IS NULL OR json_extract(meta, '$.goalId') IS NULL OR json_extract(meta, '$.goalId') IN (${placeholders})) ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(employeeId, ...activeGoalIds, limit) as ActivityEvent[];
 }

@@ -28,6 +28,29 @@ type MeetingProps = {
 
 const STORAGE_KEY = "company-meeting-sessions-v2";
 
+// 将会议 session 格式化为 markdown 纪要（纯函数，无副作用）
+function exportMarkdown(session: MeetingSession, employees: Employee[]): string {
+  const dateStr = session.createdAt.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  let md = `# 会议纪要：${session.topic}\n\n日期：${dateStr}\n`;
+  for (let i = 0; i < session.rounds.length; i++) {
+    const round = session.rounds[i];
+    md += `\n## 第 ${i + 1} 轮\n\n**CEO**：${round.message}\n`;
+    for (const reply of round.replies) {
+      if (!reply.text) continue;
+      const emp = employees.find((e) => e.id === reply.employeeId);
+      const label = emp ? `${emp.name}（${emp.role}）` : reply.employeeId;
+      md += `\n**${label}**：${reply.text}\n`;
+    }
+  }
+  return md;
+}
+
 export function Meeting({ employees }: MeetingProps) {
   const [sessions, setSessions] = useState<MeetingSession[]>(() => {
     try {
@@ -42,6 +65,7 @@ export function Meeting({ employees }: MeetingProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
+  const [exportMd, setExportMd] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -305,29 +329,86 @@ export function Meeting({ employees }: MeetingProps) {
       </div>
 
       {/* Right panel */}
-      <main role="main" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <main role="main" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
+        {/* 导出纪要覆盖层 */}
+        {exportMd !== null && (
+          <ExportOverlay
+            markdown={exportMd}
+            topic={activeSession?.topic ?? "会议纪要"}
+            onClose={() => setExportMd(null)}
+          />
+        )}
+
         {activeSession ? (
-          <div
-            style={{
-              flex: 1,
-              overflow: "auto",
-              padding: "var(--space-6)",
-              display: "flex",
-              flexDirection: "column",
-              gap: "var(--space-6)",
-            }}
-          >
-            {activeSession.rounds.map((round, roundIndex) => (
-              <RoundBlock
-                key={round.id}
-                round={round}
-                roundIndex={roundIndex}
-                employees={employees}
-                session={activeSession}
-              />
-            ))}
-            <div ref={bottomRef} />
-          </div>
+          <>
+            {/* 会议标题栏 */}
+            <div
+              style={{
+                padding: "var(--space-3) var(--space-6)",
+                borderBottom: "1px solid var(--border)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                flexShrink: 0,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: "var(--text-sm)",
+                  fontWeight: 600,
+                  color: "var(--text-primary)",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  flex: 1,
+                  marginRight: "var(--space-3)",
+                }}
+              >
+                {activeSession.topic}
+              </span>
+              {/* 仅当所有轮次均完成时显示导出按钮 */}
+              {activeSession.rounds.length > 0 && activeSession.rounds.every((r) => r.done) && (
+                <button
+                  onClick={() => setExportMd(exportMarkdown(activeSession, employees))}
+                  style={{
+                    background: "none",
+                    border: "1px solid var(--border)",
+                    borderRadius: "var(--radius-sm)",
+                    color: "var(--text-secondary)",
+                    fontSize: "var(--text-xs)",
+                    padding: "3px 10px",
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                    flexShrink: 0,
+                  }}
+                >
+                  导出纪要
+                </button>
+              )}
+            </div>
+
+            <div
+              style={{
+                flex: 1,
+                overflow: "auto",
+                padding: "var(--space-6)",
+                display: "flex",
+                flexDirection: "column",
+                gap: "var(--space-6)",
+              }}
+            >
+              {activeSession.rounds.map((round, roundIndex) => (
+                <RoundBlock
+                  key={round.id}
+                  round={round}
+                  roundIndex={roundIndex}
+                  employees={employees}
+                  session={activeSession}
+                />
+              ))}
+              <div ref={bottomRef} />
+            </div>
+          </>
         ) : (
           <div
             style={{
@@ -502,6 +583,145 @@ function MiniWave({ color }: { color: string }) {
           30% { transform: translateY(-5px); opacity: 1; }
         }
       `}</style>
+    </div>
+  );
+}
+
+function ExportOverlay({
+  markdown,
+  topic,
+  onClose,
+}: {
+  markdown: string;
+  topic: string;
+  onClose: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(markdown);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleDownload = () => {
+    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    // 用会议主题前20字作为文件名，过滤非法字符
+    const safeName = topic.slice(0, 20).replace(/[\\/:*?"<>|]/g, "_");
+    a.href = url;
+    a.download = `会议纪要-${safeName}.md`;
+    a.click();
+    // 立即释放对象 URL，避免内存泄漏
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    // 半透明遮罩，点击关闭
+    <div
+      onClick={onClose}
+      style={{
+        position: "absolute",
+        inset: 0,
+        background: "rgba(0,0,0,0.5)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 100,
+      }}
+    >
+      {/* 内容卡片，阻止点击冒泡到遮罩 */}
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--bg-card)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius)",
+          padding: "var(--space-5)",
+          width: "min(640px, 90%)",
+          maxHeight: "80vh",
+          display: "flex",
+          flexDirection: "column",
+          gap: "var(--space-3)",
+        }}
+      >
+        {/* 标题栏 */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--text-primary)" }}>
+            会议纪要预览
+          </span>
+          <button
+            onClick={onClose}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              color: "var(--text-muted)",
+              fontSize: "16px",
+              lineHeight: 1,
+              padding: "2px 4px",
+            }}
+            aria-label="关闭"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Markdown 只读预览 */}
+        <textarea
+          readOnly
+          value={markdown}
+          style={{
+            flex: 1,
+            minHeight: 300,
+            background: "var(--bg-base)",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius-sm)",
+            color: "var(--text-primary)",
+            fontSize: "var(--text-xs)",
+            fontFamily: "monospace",
+            lineHeight: 1.6,
+            padding: "var(--space-3)",
+            resize: "vertical",
+            outline: "none",
+          }}
+        />
+
+        {/* 操作按钮 */}
+        <div style={{ display: "flex", gap: "var(--space-2)", justifyContent: "flex-end" }}>
+          <button
+            onClick={() => void handleCopy()}
+            style={{
+              background: "none",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius-sm)",
+              color: copied ? "var(--accent-done)" : "var(--text-secondary)",
+              fontSize: "var(--text-xs)",
+              padding: "4px 12px",
+              cursor: "pointer",
+              transition: "color var(--transition-fast)",
+            }}
+          >
+            {copied ? "已复制 ✓" : "复制"}
+          </button>
+          <button
+            onClick={handleDownload}
+            style={{
+              background: "var(--accent-agent)",
+              border: "none",
+              borderRadius: "var(--radius-sm)",
+              color: "#fff",
+              fontSize: "var(--text-xs)",
+              fontWeight: 600,
+              padding: "4px 12px",
+              cursor: "pointer",
+            }}
+          >
+            下载 .md
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

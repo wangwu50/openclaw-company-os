@@ -93,7 +93,7 @@ export function App() {
             path="/meeting"
             element={<Meeting employees={data.employees} />}
           />
-          <Route path="/decisions" element={<Decisions />} />
+          <Route path="/decisions" element={<Decisions employees={data.employees} />} />
         </Routes>
       </div>
     </div>

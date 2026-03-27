@@ -3,9 +3,12 @@ import {
   deletePendingDecision,
   getActiveGoals,
   getDecisions,
+  getDecisionsFiltered,
+  getDecisionStats,
   getGoalTasks,
   getPendingDecisions,
   getRecentReports,
+  getReportsByDays,
   insertDecision,
   updateDecisionTag,
   insertPendingDecision,
@@ -15,6 +18,7 @@ import {
   insertActivity,
   getRecentActivity,
   updateGoalTaskStatus,
+  updateGoalTask,
   insertCustomEmployee,
   deleteCustomEmployee,
   getCustomEmployees,
@@ -93,12 +97,26 @@ export async function handleApiRequest(ctx: RouteContext): Promise<void> {
       });
     }
 
+    // GET /company/api/decisions/stats — 各状态数量汇总（放在 /decisions 之前避免路由歧义）
+    if (req.method === "GET" && path === "/company/api/decisions/stats") {
+      return json(res, { stats: getDecisionStats() });
+    }
+
     // GET /company/api/decisions
     if (req.method === "GET" && path === "/company/api/decisions") {
       const q = url.searchParams.get("q");
+      const employee = url.searchParams.get("employee") ?? "";
+      const status = url.searchParams.get("status") ?? "";
       const limit = Number(url.searchParams.get("limit") ?? "50");
       const offset = Number(url.searchParams.get("offset") ?? "0");
-      const decisions = q ? searchDecisions(q) : getDecisions(limit, offset);
+      let decisions;
+      if (q) {
+        decisions = searchDecisions(q);
+      } else if (employee || status) {
+        decisions = getDecisionsFiltered({ employeeId: employee || undefined, status: status || undefined, limit, offset });
+      } else {
+        decisions = getDecisions(limit, offset);
+      }
       return json(res, { decisions });
     }
 
@@ -157,20 +175,33 @@ ${context ? `附加说明：${context}` : ""}
     // POST /company/api/decisions/pending — employee files a decision request
     if (req.method === "POST" && path === "/company/api/decisions/pending") {
       const body = await parseBody(req);
-      const { employeeId, background, optionA, optionB } = body as {
+      const { employeeId, background, optionA, optionB, options } = body as {
         employeeId: string;
         background: string;
         optionA: string;
         optionB?: string;
+        options?: string[];
       };
       if (!employeeId || !background || !optionA) {
         return json(res, { error: "employeeId, background, optionA are required" }, 400);
       }
-      const pending = insertPendingDecision(employeeId, background, optionA, optionB);
+      const pending = insertPendingDecision(employeeId, background, optionA, optionB, options);
       // Log to activity
-      const label = optionB ? `选A: ${optionA} | 选B: ${optionB}` : optionA;
+      const label = options && options.length >= 2 ? options.join(" | ") : (optionB ? `选A: ${optionA} | 选B: ${optionB}` : optionA);
       insertActivity(employeeId, "pending_decision", `[待决] ${background}（${label}）`);
       return json(res, { pending });
+    }
+
+    // GET /company/api/reports — 返回员工汇报记录；支持 days（按时间范围）或 limit（按数量）
+    if (req.method === "GET" && path === "/company/api/reports") {
+      if (url.searchParams.has("days")) {
+        const days = Math.min(Math.max(Number(url.searchParams.get("days") ?? "7"), 1), 30);
+        const reports = getReportsByDays(days);
+        return json(res, { reports });
+      }
+      const limit = Number(url.searchParams.get("limit") ?? "30");
+      const reports = getRecentReports(limit);
+      return json(res, { reports });
     }
 
     // GET /company/api/activity
@@ -279,15 +310,33 @@ ${context ? `附加说明：${context}` : ""}
       return json(res, { ok: true });
     }
 
-    // PATCH /company/api/tasks/:id — update task status
+    // PATCH /company/api/tasks/:id — update task status / deadline / priority / extraGoalIds
     if (req.method === "PATCH" && /^\/company\/api\/tasks\/\d+$/.test(path)) {
       const id = Number(path.split("/").pop());
       const body = await parseBody(req);
-      const { status } = body as { status: "pending" | "in_progress" | "done" };
-      if (!["pending", "in_progress", "done"].includes(status)) {
+      const { status, deadline, priority, extraGoalIds } = body as {
+        status?: "pending" | "in_progress" | "done";
+        deadline?: string | null;
+        priority?: string;
+        extraGoalIds?: unknown;
+      };
+      if (status !== undefined && !["pending", "in_progress", "done"].includes(status)) {
         return json(res, { error: "status must be pending | in_progress | done" }, 400);
       }
-      updateGoalTaskStatus(id, status);
+      if (priority !== undefined && !["low", "normal", "high"].includes(priority)) {
+        return json(res, { error: "priority must be low | normal | high" }, 400);
+      }
+      if (extraGoalIds !== undefined && extraGoalIds !== null) {
+        if (!Array.isArray(extraGoalIds) || !(extraGoalIds as unknown[]).every((x) => typeof x === "number")) {
+          return json(res, { error: "extraGoalIds must be an array of numbers or null" }, 400);
+        }
+      }
+      updateGoalTask(id, {
+        ...(status !== undefined && { status }),
+        ...(deadline !== undefined && { deadline }),
+        ...(priority !== undefined && { priority: priority as "low" | "normal" | "high" }),
+        ...(extraGoalIds !== undefined && { extraGoalIds: extraGoalIds === null ? null : (extraGoalIds as number[]) }),
+      });
       return json(res, { ok: true });
     }
 
@@ -317,6 +366,13 @@ ${context ? `附加说明：${context}` : ""}
         system_prompt: systemPrompt ?? "",
         cron_schedule: cronSchedule ?? "0 10 * * 1-5",
         cron_prompt: cronPrompt ?? "",
+      });
+      // 异步触发入职引导，不阻塞响应
+      const onboardingPrompt = `你刚刚加入公司，角色是${role}。请做一个简短的自我介绍（2-3句），并说明你将如何为公司创造价值。以「[入职] 」开头。`;
+      setImmediate(() => {
+        void ctx.runAgent(id, onboardingPrompt).then((reply) => {
+          if (reply) insertActivity(id, "task_response", reply);
+        }).catch(() => void 0);
       });
       return json(res, { ok: true });
     }
