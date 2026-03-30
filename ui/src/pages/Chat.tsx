@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import type { ActivityEvent, Employee } from "../types.js";
+import type { ActivityEvent, Employee, Goal } from "../types.js";
 import { streamChatWithEmployee, useActivity } from "../hooks/useApi.js";
 
 const EVENT_ICONS: Record<string, string> = {
@@ -27,12 +27,15 @@ type Message = {
 
 type ChatProps = {
   employees: Employee[];
+  goals: Goal[];
 };
 
-export function Chat({ employees }: ChatProps) {
+export function Chat({ employees, goals }: ChatProps) {
   const { employeeId } = useParams<{ employeeId: string }>();
   const emp = employees.find((e) => e.id === employeeId);
-  const allActivity = useActivity(5_000);
+  const isChief = employeeId === "company-coo";
+  const [goalId, setGoalId] = useState<number | undefined>(undefined);
+  const allActivity = useActivity(5_000, goalId);
   const empActivity = allActivity.filter((a) => a.employee_id === employeeId);
 
   const [messages, setMessages] = useState<Message[]>([]);
@@ -43,18 +46,44 @@ export function Chat({ employees }: ChatProps) {
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Tracks which employee's messages are currently loaded, so saves never cross-contaminate
   const saveKeyRef = useRef<string | undefined>(undefined);
+  const scopeKey = goalId === undefined ? "all" : String(goalId);
+
+  const goalsForEmp = goals.filter((g) => g.tasks.some((t) => t.employee_id === employeeId));
+  const activeGoal = goalId === undefined ? null : goals.find((g) => g.id === goalId) ?? null;
+
+  // Load persisted goal scope per employee
+  useEffect(() => {
+    if (!employeeId) return;
+    const raw = localStorage.getItem(`chat-scope:${employeeId}`);
+    const parsed = raw ? Number(raw) : NaN;
+    if (
+      Number.isFinite(parsed)
+      && goals.some((g) => g.id === parsed)
+      && goals.some((g) => g.id === parsed && g.tasks.some((t) => t.employee_id === employeeId))
+    ) {
+      setGoalId(parsed);
+    } else {
+      setGoalId(undefined);
+    }
+  }, [employeeId, goals]);
+
+  useEffect(() => {
+    if (!employeeId) return;
+    if (goalId === undefined) localStorage.removeItem(`chat-scope:${employeeId}`);
+    else localStorage.setItem(`chat-scope:${employeeId}`, String(goalId));
+  }, [employeeId, goalId]);
 
   // Load persisted messages when switching employees, save key so saves go to right slot
   useEffect(() => {
     saveKeyRef.current = undefined; // pause saving during load
-    const stored = localStorage.getItem(`chat:${employeeId ?? ""}`);
+    const stored = localStorage.getItem(`chat:${employeeId ?? ""}:goal:${scopeKey}`);
     setMessages(stored ? (JSON.parse(stored) as Message[]) : []);
     setInput("");
     setThinking(false);
     setTimedOut(false);
     if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
-    saveKeyRef.current = employeeId; // resume saving for this employee
-  }, [employeeId]);
+    saveKeyRef.current = `${employeeId ?? ""}:goal:${scopeKey}`; // resume saving for this scope
+  }, [employeeId, scopeKey]);
 
   // Persist messages to localStorage whenever they change
   useEffect(() => {
@@ -79,6 +108,16 @@ export function Chat({ employees }: ChatProps) {
     return (
       <main role="main" style={mainStyle}>
         <p style={{ color: "var(--text-muted)" }}>未找到该员工</p>
+      </main>
+    );
+  }
+
+  if (!isChief) {
+    return (
+      <main role="main" style={mainStyle}>
+        <p style={{ color: "var(--text-muted)", padding: "var(--space-8)" }}>
+          该角色仅可由总指挥 AI 调度。请从侧边栏进入总指挥会话。
+        </p>
       </main>
     );
   }
@@ -110,7 +149,7 @@ export function Chat({ employees }: ChatProps) {
         // Clear the "thinking" state on first chunk
         setThinking(false);
         if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
-      });
+      }, goalId);
     } catch (e) {
       setMessages((prev) =>
         prev.map((m) =>
@@ -149,6 +188,33 @@ export function Chat({ employees }: ChatProps) {
             {emp.role}
           </div>
         </div>
+        <div style={{ marginLeft: "var(--space-3)", display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+          <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>目标隔离</span>
+          <select
+            value={goalId ?? ""}
+            onChange={(e) => {
+              const v = e.target.value;
+              setGoalId(v ? Number(v) : undefined);
+            }}
+            aria-label="目标作用域"
+            style={{
+              background: "var(--bg-base)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius-sm)",
+              color: "var(--text-primary)",
+              fontSize: "var(--text-xs)",
+              padding: "2px 8px",
+              outline: "none",
+            }}
+          >
+            <option value="">公司全局</option>
+            {goalsForEmp.map((g) => (
+              <option key={g.id} value={g.id}>
+                #{g.id} {g.title}
+              </option>
+            ))}
+          </select>
+        </div>
         <span
           style={{
             width: 8,
@@ -160,6 +226,19 @@ export function Chat({ employees }: ChatProps) {
           title="在线"
         />
       </div>
+      {activeGoal && (
+        <div
+          style={{
+            padding: "6px var(--space-6)",
+            borderBottom: "1px dashed var(--border)",
+            fontSize: "var(--text-xs)",
+            color: "var(--text-secondary)",
+            background: "var(--bg-sidebar)",
+          }}
+        >
+          当前仅处理目标：#{activeGoal.id} {activeGoal.title}
+        </div>
+      )}
 
       {/* Message list */}
       <div
@@ -228,7 +307,7 @@ export function Chat({ employees }: ChatProps) {
               }
             }}
             disabled={thinking}
-            placeholder={`给 ${emp.name} 发消息… (Enter 发送，Shift+Enter 换行)`}
+            placeholder={`给 ${emp.name} 发消息… ${activeGoal ? `(目标 #${activeGoal.id}) ` : ""}(Enter 发送，Shift+Enter 换行)`}
             aria-label="消息输入"
             style={{
               flex: 1,

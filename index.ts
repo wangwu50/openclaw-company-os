@@ -8,16 +8,19 @@ import { getAllEmployees, getAnyEmployee } from "./src/employees.js";
 import {
   getActiveGoals,
   getDecisions,
+  getDecisionsFiltered,
   getPendingDecisions,
   insertPendingDecision,
   insertActivity,
   getEmployeeReports,
+  getGoalById,
   findGoalTaskByTitle,
   updateGoalTaskStatus,
 } from "./src/db.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const CHIEF_ID = "company-coo";
 
 // Dynamic set of all employee agentIds (includes custom employees)
 function getEmployeeIds(): Set<string> {
@@ -93,16 +96,14 @@ export default definePluginEntry({
           return handleApiRequest({
             req,
             res,
-            runAgent: (employeeId, prompt) => runEmployeeAgent(employeeId, prompt, agentDeps),
-            runAgentStream: (employeeId, prompt, onChunk) =>
-              runEmployeeAgent(employeeId, prompt, agentDeps, onChunk).then(() => void 0),
-            decomposGoal: async (title, description) => {
-              const goals = getActiveGoals();
-              const goal = goals.find((g) => g.title === title);
-              if (!goal) return;
-              void decomposeGoal(goal.id, title, description, agentDeps).catch(() => void 0);
+            runAgent: (employeeId, prompt, goalId) =>
+              runEmployeeAgent(employeeId, prompt, agentDeps, undefined, 0, goalId),
+            runAgentStream: (employeeId, prompt, onChunk, goalId) =>
+              runEmployeeAgent(employeeId, prompt, agentDeps, onChunk, 0, goalId).then(() => void 0),
+            decomposGoal: async (goalId, title, description) => {
+              await decomposeGoal(goalId, title, description, agentDeps);
             },
-            scheduleFollowUp: (employeeId, delayMs) => scheduleFollowUp(employeeId, agentDeps, delayMs),
+            scheduleFollowUp: (employeeId, delayMs, goalId) => scheduleFollowUp(employeeId, agentDeps, delayMs, 1, goalId),
             generateEmployee: (description) => generateEmployeeFromDescription(description, agentDeps),
           });
         }
@@ -152,8 +153,23 @@ export default definePluginEntry({
       const employee = getAnyEmployee(agentId);
       if (!employee) return;
 
-      const goals = getActiveGoals();
-      const recentDecisions = getDecisions(5);
+      const sessionKey = (ctx as unknown as { sessionKey?: string })?.sessionKey ?? "";
+      const scopedGoalId = (() => {
+        const m = sessionKey.match(/:goal:(\d+)/);
+        if (!m) return undefined;
+        const n = Number(m[1]);
+        return Number.isFinite(n) && n > 0 ? n : undefined;
+      })();
+
+      const goals = scopedGoalId !== undefined
+        ? (() => {
+            const g = getGoalById(scopedGoalId);
+            return g ? [g] : [];
+          })()
+        : getActiveGoals();
+      const recentDecisions = scopedGoalId !== undefined
+        ? getDecisionsFiltered({ goalId: scopedGoalId, limit: 5, offset: 0 })
+        : getDecisions(5);
 
       const goalsSummary =
         goals.length > 0
@@ -167,7 +183,7 @@ export default definePluginEntry({
               .join("\n")
           : "（暂无历史决策）";
 
-      const pendingByMe = getPendingDecisions().filter(
+      const pendingByMe = getPendingDecisions(scopedGoalId).filter(
         (p) => p.employee_id === agentId,
       ).length;
 
@@ -183,6 +199,8 @@ ${employee.systemPrompt}
 
 ## 公司当前目标
 ${goalsSummary}
+
+${scopedGoalId !== undefined ? `## 当前会话范围\n你当前在目标隔离模式中，只处理 goalId=${scopedGoalId} 的任务。` : ""}
 
 ## CEO 近期决策（供参考）
 ${decisionsSummary}
@@ -212,6 +230,13 @@ ${colleagues}
     api.on("llm_output", async (event, ctx) => {
       const agentId = ctx?.agentId;
       if (!agentId || !getEmployeeIds().has(agentId)) return;
+      const sessionKey = (ctx as unknown as { sessionKey?: string })?.sessionKey ?? "";
+      const scopedGoalId = (() => {
+        const m = sessionKey.match(/:goal:(\d+)/);
+        if (!m) return undefined;
+        const n = Number(m[1]);
+        return Number.isFinite(n) && n > 0 ? n : undefined;
+      })();
 
       const texts = event.assistantTexts ?? [];
       const combined = texts.join("\n");
@@ -232,9 +257,11 @@ ${colleagues}
           background.trim(),
           optionA.trim(),
           optionB?.trim(),
+          undefined,
+          scopedGoalId,
         );
         const label = optionB?.trim() ? `选A: ${optionA.trim()} | 选B: ${optionB.trim()}` : optionA.trim();
-        insertActivity(agentId, "pending_decision", `[待决] ${background.trim()}（${label}）`);
+        insertActivity(agentId, "pending_decision", `[待决] ${background.trim()}（${label}）`, { goalId: scopedGoalId });
       } catch {
         // non-fatal
       }
@@ -247,7 +274,7 @@ ${colleagues}
           const keyword = m[1].trim();
           if (!keyword) continue;
           try {
-            const task = findGoalTaskByTitle(agentId, keyword);
+            const task = findGoalTaskByTitle(agentId, keyword, scopedGoalId);
             if (task) updateGoalTaskStatus(task.id, status);
           } catch {
             // non-fatal
@@ -269,9 +296,11 @@ ${colleagues}
       const lastFired: Record<string, string> = {};
 
       // Scheduled cron: check every minute, fire when time matches
+      const coordinatorOnly = getAllEmployees().filter((e) => e.id === CHIEF_ID);
+
       setInterval(() => {
         const now = new Date();
-        for (const emp of getAllEmployees()) {
+        for (const emp of coordinatorOnly) {
           if (!matchesCronNow(emp.cronSchedule, now)) continue;
           const key = `${emp.id}:${now.getFullYear()}-${now.getMonth()}-${now.getDate()}-${now.getHours()}-${now.getMinutes()}`;
           if (lastFired[emp.id] === key) continue;
@@ -285,7 +314,7 @@ ${colleagues}
       // so the CEO sees proactive reports without waiting for scheduled times.
       // Only fires if the employee hasn't reported in the last 6 hours.
       // Stagger by 45s per employee to avoid lane saturation.
-      getAllEmployees().forEach((emp, i) => {
+      coordinatorOnly.forEach((emp, i) => {
         setTimeout(() => {
           const recent = getEmployeeReports(emp.id, 1);
           if (recent.length > 0) {

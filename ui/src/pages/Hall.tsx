@@ -58,9 +58,11 @@ function exportReportsMd(reports: EmployeeReport[], employees: HallData["employe
 }
 
 export function Hall({ data, onRefresh }: HallProps) {
-  const activity = useActivity(4_000);
   const navigate = useNavigate();
   const { notify } = useNotification();
+  const [goalScope, setGoalScope] = useState<string>("");
+  const scopedGoalId = goalScope ? Number(goalScope) : undefined;
+  const activity = useActivity(4_000, scopedGoalId);
   const [reportDays, setReportDays] = useState<1 | 7>(7);
   const [reportExportMd, setReportExportMd] = useState<string | null>(null);
   // 追踪上一次的待决请求列表，用于检测新增项
@@ -85,14 +87,16 @@ export function Hall({ data, onRefresh }: HallProps) {
     month: "long",
     day: "numeric",
   });
+  const scopedGoals = scopedGoalId === undefined ? data.goals : data.goals.filter((g) => g.id === scopedGoalId);
+  const scopedPending = scopedGoalId === undefined ? data.pending : data.pending.filter((p) => p.goal_id === scopedGoalId);
 
-  if (data.pending.length === 0 && activity.length === 0 && data.goals.length === 0) {
+  if (scopedPending.length === 0 && activity.length === 0 && scopedGoals.length === 0) {
     return <HallEmpty onGoalSet={async (title) => { await setGoal({ title }); onRefresh(); }} />;
   }
 
   // Build per-employee task list from goals
   const tasksByEmployee: Record<string, HallData["goals"][0]["tasks"]> = {};
-  for (const goal of data.goals) {
+  for (const goal of scopedGoals) {
     for (const task of goal.tasks) {
       if (!tasksByEmployee[task.employee_id]) tasksByEmployee[task.employee_id] = [];
       tasksByEmployee[task.employee_id].push(task);
@@ -140,15 +144,38 @@ export function Hall({ data, onRefresh }: HallProps) {
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h1 style={{ fontSize: "var(--text-xl)", fontWeight: 700 }}>公司大厅</h1>
-        <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>{today}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+          <select
+            value={goalScope}
+            onChange={(e) => setGoalScope(e.target.value)}
+            aria-label="大厅目标范围"
+            style={{
+              background: "var(--bg-card)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius-sm)",
+              color: "var(--text-secondary)",
+              fontSize: "var(--text-xs)",
+              padding: "2px 8px",
+              outline: "none",
+            }}
+          >
+            <option value="">全部目标</option>
+            {data.goals.map((g) => (
+              <option key={g.id} value={g.id}>
+                #{g.id} {g.title}
+              </option>
+            ))}
+          </select>
+          <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>{today}</span>
+        </div>
       </div>
 
       {/* Pending decisions (full-width, priority) */}
-      {data.pending.length > 0 && (
+      {scopedPending.length > 0 && (
         <section aria-label="待决事项">
-          <SectionLabel label={`⚡ 待决事项 (${data.pending.length})`} />
+          <SectionLabel label={`⚡ 待决事项 (${scopedPending.length})`} />
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-            {data.pending.map((p) => (
+            {scopedPending.map((p) => (
               <DecisionCard
                 key={p.id}
                 pending={p}
@@ -159,6 +186,7 @@ export function Hall({ data, onRefresh }: HallProps) {
                     employeeId: p.employee_id,
                     summary: p.background,
                     choice: custom ?? choice,
+                    goalId: p.goal_id ?? undefined,
                   });
                   onRefresh();
                 }}
@@ -203,7 +231,7 @@ export function Hall({ data, onRefresh }: HallProps) {
               </select>
               <button
                 onClick={() => {
-                  void fetchReports(reportDays).then((reports) => {
+                  void fetchReports(reportDays, scopedGoalId).then((reports) => {
                     setReportExportMd(exportReportsMd(reports, data.employees, reportDays));
                   });
                 }}
@@ -249,7 +277,7 @@ export function Hall({ data, onRefresh }: HallProps) {
         <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}>
           {/* Goals */}
           <section aria-label="公司目标">
-            <GoalsPanel goals={data.goals} onRefresh={onRefresh} />
+            <GoalsPanel goals={scopedGoals} onRefresh={onRefresh} />
           </section>
 
           {/* Employee status */}

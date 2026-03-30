@@ -17,7 +17,7 @@ type SidebarProps = {
 
 const NAV_ITEMS = [
   { to: "/", icon: "🏢", label: "大厅", exact: true },
-  { to: "/meeting", icon: "🎤", label: "全员会议" },
+  { to: "/workspace", icon: "🧭", label: "目标工作台" },
   { to: "/decisions", icon: "📋", label: "决策台账" },
 ];
 
@@ -88,6 +88,8 @@ const ROLE_TEMPLATES: RoleTemplate[] = [
 
 export function Sidebar({ employees, pendingCount, onEmployeeChange }: SidebarProps) {
   const [showModal, setShowModal] = useState(false);
+  const chief = employees.find((e) => e.id === "company-coo") ?? employees[0];
+  const chatEmployees = chief ? [chief] : [];
 
   return (
     <>
@@ -151,7 +153,7 @@ export function Sidebar({ employees, pendingCount, onEmployeeChange }: SidebarPr
             justifyContent: "space-between",
           }}
         >
-          <span>员工</span>
+          <span>指挥入口</span>
           <button
             onClick={() => setShowModal(true)}
             title="添加自定义员工"
@@ -171,7 +173,7 @@ export function Sidebar({ employees, pendingCount, onEmployeeChange }: SidebarPr
             +
           </button>
         </div>
-        {employees.map((emp) => (
+        {chatEmployees.map((emp) => (
           <div key={emp.id} style={{ display: "flex", alignItems: "center", position: "relative" }}>
             <NavLink
               to={`/chat/${emp.id}`}

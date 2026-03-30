@@ -47,14 +47,16 @@ export function useDecisions() {
   const [query, setQuery] = useState("");
   const [employeeFilter, setEmployeeFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [goalFilter, setGoalFilter] = useState("");
 
-  const search = useCallback(async (q: string, employee: string, status: string) => {
+  const search = useCallback(async (q: string, employee: string, status: string, goal: string) => {
     setLoading(true);
     try {
       const params = new URLSearchParams();
       if (q) params.set("q", q);
       if (employee) params.set("employee", employee);
       if (status) params.set("status", status);
+      if (goal) params.set("goalId", goal);
       const qs = params.toString();
       const res = await fetchJson<{ decisions: Decision[] }>(`${BASE}/decisions${qs ? `?${qs}` : ""}`);
       setDecisions(res.decisions);
@@ -67,20 +69,21 @@ export function useDecisions() {
   }, []);
 
   useEffect(() => {
-    void search(query, employeeFilter, statusFilter);
-  }, [query, employeeFilter, statusFilter, search]);
+    void search(query, employeeFilter, statusFilter, goalFilter);
+  }, [query, employeeFilter, statusFilter, goalFilter, search]);
 
-  return { decisions, loading, error, query, setQuery, employeeFilter, setEmployeeFilter, statusFilter, setStatusFilter };
+  return { decisions, loading, error, query, setQuery, employeeFilter, setEmployeeFilter, statusFilter, setStatusFilter, goalFilter, setGoalFilter };
 }
 
-export function useDecisionStats() {
+export function useDecisionStats(goalId?: number) {
   const [stats, setStats] = useState<Record<string, number>>({});
 
   useEffect(() => {
-    void fetchJson<{ stats: Record<string, number> }>(`${BASE}/decisions/stats`)
+    const qs = goalId ? `?goalId=${goalId}` : "";
+    void fetchJson<{ stats: Record<string, number> }>(`${BASE}/decisions/stats${qs}`)
       .then((res) => setStats(res.stats))
       .catch(() => void 0);
-  }, []);
+  }, [goalId]);
 
   return stats;
 }
@@ -91,6 +94,7 @@ export async function sendDecision(body: {
   summary: string;
   choice: string;
   context?: string;
+  goalId?: number;
 }): Promise<void> {
   await fetchJson(`${BASE}/decisions`, {
     method: "POST",
@@ -102,13 +106,14 @@ export async function sendDecision(body: {
 export async function chatWithEmployee(
   employeeId: string,
   message: string,
+  goalId?: number,
 ): Promise<string> {
   const res = await fetchJson<{ reply: string }>(
     `${BASE}/chat/${employeeId}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, goalId }),
     },
   );
   return res.reply;
@@ -122,11 +127,12 @@ export async function streamChatWithEmployee(
   employeeId: string,
   message: string,
   onChunk: (text: string) => void,
+  goalId?: number,
 ): Promise<string> {
   const res = await fetch(`${BASE}/chat/${employeeId}/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, goalId }),
   });
 
   if (!res.ok || !res.body) {
@@ -200,6 +206,10 @@ export async function deleteGoal(id: number): Promise<void> {
   await fetchJson(`${BASE}/goals/${id}`, { method: "DELETE" });
 }
 
+export async function reDecomposeGoal(id: number): Promise<void> {
+  await fetchJson(`${BASE}/goals/${id}/decompose`, { method: "POST" });
+}
+
 export async function updateTask(
   id: number,
   fields: { status?: "pending" | "in_progress" | "done"; deadline?: string | null; priority?: string; extraGoalIds?: number[] | null },
@@ -232,22 +242,26 @@ export async function deleteEmployee(id: string): Promise<void> {
   await fetchJson(`${BASE}/employees/${id}`, { method: "DELETE" });
 }
 
-export async function fetchReports(days: number): Promise<EmployeeReport[]> {
-  const res = await fetchJson<{ reports: EmployeeReport[] }>(`${BASE}/reports?days=${days}`);
+export async function fetchReports(days: number, goalId?: number): Promise<EmployeeReport[]> {
+  const params = new URLSearchParams({ days: String(days) });
+  if (goalId !== undefined) params.set("goalId", String(goalId));
+  const res = await fetchJson<{ reports: EmployeeReport[] }>(`${BASE}/reports?${params.toString()}`);
   return res.reports;
 }
 
-export function useActivity(refreshMs = 5_000) {
+export function useActivity(refreshMs = 5_000, goalId?: number) {
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
 
   const refresh = useCallback(async () => {
     try {
-      const res = await fetchJson<{ activity: ActivityEvent[] }>(`${BASE}/activity?limit=60`);
+      const qs = new URLSearchParams({ limit: "60" });
+      if (goalId !== undefined) qs.set("goalId", String(goalId));
+      const res = await fetchJson<{ activity: ActivityEvent[] }>(`${BASE}/activity?${qs.toString()}`);
       setActivity(res.activity);
     } catch {
       // silent
     }
-  }, []);
+  }, [goalId]);
 
   useEffect(() => {
     void refresh();

@@ -20,6 +20,12 @@ export type GoalTask = {
   id: number;
   goal_id: number;
   employee_id: string;
+  task_uid: string | null;
+  depends_on_task_uids: string | null;
+  deliverable: string | null;
+  done_definition: string | null;
+  sequence: number;
+  dispatched_at: string | null;
   title: string;
   status: "pending" | "in_progress" | "done";
   deadline: string | null;
@@ -30,6 +36,7 @@ export type GoalTask = {
 export type PendingDecision = {
   id: number;
   employee_id: string;
+  goal_id: number | null;
   background: string;
   option_a: string;
   option_b: string | null;
@@ -40,6 +47,7 @@ export type PendingDecision = {
 export type Decision = {
   id: number;
   employee_id: string;
+  goal_id: number | null;
   summary: string;
   context: string | null;
   choice: string;
@@ -50,6 +58,7 @@ export type Decision = {
 export type EmployeeReport = {
   id: number;
   employee_id: string;
+  goal_id: number | null;
   content: string;
   created_at: string;
 };

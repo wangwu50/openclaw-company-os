@@ -1,4 +1,4 @@
-import type { Decision, Employee } from "../types.js";
+import type { Decision, Employee, Goal } from "../types.js";
 import { useDecisions, useDecisionStats } from "../hooks/useApi.js";
 
 const STATUS_OPTIONS = [
@@ -11,13 +11,26 @@ const STATUS_OPTIONS = [
 
 type DecisionsProps = {
   employees: Employee[];
+  goals: Goal[];
 };
 
-export function Decisions({ employees }: DecisionsProps) {
-  const { decisions, loading, error, query, setQuery, employeeFilter, setEmployeeFilter, statusFilter, setStatusFilter } = useDecisions();
-  const stats = useDecisionStats();
+export function Decisions({ employees, goals }: DecisionsProps) {
+  const {
+    decisions,
+    loading,
+    error,
+    query,
+    setQuery,
+    employeeFilter,
+    setEmployeeFilter,
+    statusFilter,
+    setStatusFilter,
+    goalFilter,
+    setGoalFilter,
+  } = useDecisions();
+  const stats = useDecisionStats(goalFilter ? Number(goalFilter) : undefined);
 
-  const hasFilter = query.length > 0 || !!employeeFilter || !!statusFilter;
+  const hasFilter = query.length > 0 || !!employeeFilter || !!statusFilter || !!goalFilter;
 
   return (
     <main
@@ -47,6 +60,19 @@ export function Decisions({ employees }: DecisionsProps) {
           决策台账
         </h1>
         <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center", flexWrap: "wrap" }}>
+          {/* 目标筛选 */}
+          <select
+            value={goalFilter}
+            onChange={(e) => setGoalFilter(e.target.value)}
+            aria-label="按目标筛选"
+            style={selectStyle}
+          >
+            <option value="">全部目标</option>
+            {goals.map((g) => (
+              <option key={g.id} value={g.id}>#{g.id} {g.title}</option>
+            ))}
+          </select>
+
           {/* 员工筛选 */}
           <select
             value={employeeFilter}
@@ -240,6 +266,20 @@ function DecisionRow({ decision: d }: { decision: Decision }) {
           }}
         >
           {d.summary}
+          {d.goal_id !== null && (
+            <span
+              style={{
+                marginLeft: "var(--space-2)",
+                fontSize: "10px",
+                color: "var(--text-muted)",
+                border: "1px solid var(--border)",
+                borderRadius: 999,
+                padding: "1px 6px",
+              }}
+            >
+              目标 #{d.goal_id}
+            </span>
+          )}
         </div>
         {d.context && (
           <div

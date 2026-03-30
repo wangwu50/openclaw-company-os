@@ -16,6 +16,12 @@ export type GoalTask = {
   id: number;
   goal_id: number;
   employee_id: string;
+  task_uid: string | null;
+  depends_on_task_uids: string | null;
+  deliverable: string | null;
+  done_definition: string | null;
+  sequence: number;
+  dispatched_at: string | null;
   title: string;
   status: "pending" | "in_progress" | "done";
   deadline: string | null;
@@ -28,6 +34,7 @@ export type GoalTask = {
 export type Decision = {
   id: number;
   employee_id: string;
+  goal_id: number | null;
   summary: string;
   context: string | null;
   choice: string;
@@ -38,6 +45,7 @@ export type Decision = {
 export type PendingDecision = {
   id: number;
   employee_id: string;
+  goal_id: number | null;
   background: string;
   option_a: string;
   option_b: string | null;
@@ -48,6 +56,7 @@ export type PendingDecision = {
 export type EmployeeReport = {
   id: number;
   employee_id: string;
+  goal_id: number | null;
   content: string;
   created_at: string;
 };
@@ -91,6 +100,12 @@ export function getDb(): DatabaseSync {
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       goal_id     INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
       employee_id TEXT    NOT NULL,
+      task_uid    TEXT,
+      depends_on_task_uids TEXT,
+      deliverable TEXT,
+      done_definition TEXT,
+      sequence    INTEGER NOT NULL DEFAULT 0,
+      dispatched_at TEXT,
       title       TEXT    NOT NULL,
       status      TEXT    NOT NULL DEFAULT 'pending',
       created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
@@ -100,6 +115,7 @@ export function getDb(): DatabaseSync {
     CREATE TABLE IF NOT EXISTS decisions (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       employee_id TEXT    NOT NULL,
+      goal_id     INTEGER,
       summary     TEXT    NOT NULL,
       context     TEXT,
       choice      TEXT    NOT NULL,
@@ -110,6 +126,7 @@ export function getDb(): DatabaseSync {
     CREATE TABLE IF NOT EXISTS pending_decisions (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       employee_id TEXT    NOT NULL,
+      goal_id     INTEGER,
       background  TEXT    NOT NULL,
       option_a    TEXT    NOT NULL,
       option_b    TEXT,
@@ -119,6 +136,7 @@ export function getDb(): DatabaseSync {
     CREATE TABLE IF NOT EXISTS employee_reports (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       employee_id TEXT    NOT NULL,
+      goal_id     INTEGER,
       content     TEXT    NOT NULL,
       created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
     );
@@ -156,7 +174,16 @@ export function getDb(): DatabaseSync {
     "ALTER TABLE goal_tasks ADD COLUMN deadline TEXT",
     "ALTER TABLE goal_tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'",
     "ALTER TABLE goal_tasks ADD COLUMN extra_goal_ids TEXT",
+    "ALTER TABLE goal_tasks ADD COLUMN task_uid TEXT",
+    "ALTER TABLE goal_tasks ADD COLUMN depends_on_task_uids TEXT",
+    "ALTER TABLE goal_tasks ADD COLUMN deliverable TEXT",
+    "ALTER TABLE goal_tasks ADD COLUMN done_definition TEXT",
+    "ALTER TABLE goal_tasks ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE goal_tasks ADD COLUMN dispatched_at TEXT",
     "ALTER TABLE pending_decisions ADD COLUMN options TEXT",
+    "ALTER TABLE decisions ADD COLUMN goal_id INTEGER",
+    "ALTER TABLE pending_decisions ADD COLUMN goal_id INTEGER",
+    "ALTER TABLE employee_reports ADD COLUMN goal_id INTEGER",
   ]) {
     try {
       db.exec(sql);
@@ -165,6 +192,13 @@ export function getDb(): DatabaseSync {
     }
   }
 
+  // Ensure indexes exist after potential migrations
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_decisions_goal ON decisions(goal_id);
+    CREATE INDEX IF NOT EXISTS idx_pending_goal ON pending_decisions(goal_id);
+    CREATE INDEX IF NOT EXISTS idx_reports_goal ON employee_reports(goal_id);
+  `);
+
   _db = db;
   return db;
 }
@@ -172,6 +206,10 @@ export function getDb(): DatabaseSync {
 // Goals
 export function getActiveGoals(): Goal[] {
   return getDb().prepare("SELECT * FROM goals ORDER BY created_at DESC").all() as Goal[];
+}
+
+export function getGoalById(id: number): Goal | undefined {
+  return getDb().prepare("SELECT * FROM goals WHERE id = ? LIMIT 1").get(id) as Goal | undefined;
 }
 
 export function insertGoal(title: string, description: string, quarter: string): Goal {
@@ -197,20 +235,55 @@ export function deleteGoal(id: number): void {
 }
 
 export function insertGoalTask(goalId: number, employeeId: string, title: string): GoalTask {
+  return insertGoalTaskWithMeta(goalId, employeeId, title);
+}
+
+export function insertGoalTaskWithMeta(
+  goalId: number,
+  employeeId: string,
+  title: string,
+  meta?: {
+    taskUid?: string;
+    dependsOnTaskUids?: string[];
+    deliverable?: string;
+    doneDefinition?: string;
+    sequence?: number;
+  },
+): GoalTask {
   return getDb()
     .prepare(
-      "INSERT INTO goal_tasks (goal_id, employee_id, title) VALUES (?, ?, ?) RETURNING *",
+      "INSERT INTO goal_tasks (goal_id, employee_id, task_uid, depends_on_task_uids, deliverable, done_definition, sequence, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
     )
-    .get(goalId, employeeId, title) as GoalTask;
+    .get(
+      goalId,
+      employeeId,
+      meta?.taskUid ?? null,
+      meta?.dependsOnTaskUids ? JSON.stringify(meta.dependsOnTaskUids) : null,
+      meta?.deliverable ?? null,
+      meta?.doneDefinition ?? null,
+      meta?.sequence ?? 0,
+      title,
+    ) as GoalTask;
 }
 
 export function getGoalTasks(goalId: number): GoalTask[] {
   return getDb()
-    .prepare("SELECT * FROM goal_tasks WHERE goal_id = ? ORDER BY employee_id")
+    .prepare("SELECT * FROM goal_tasks WHERE goal_id = ? ORDER BY sequence, id")
     .all(goalId) as GoalTask[];
 }
 
-export function getEmployeeActiveTasks(employeeId: string): Array<GoalTask & { goal_title: string }> {
+export function getEmployeeActiveTasks(employeeId: string, goalId?: number): Array<GoalTask & { goal_title: string }> {
+  if (goalId !== undefined) {
+    return getDb()
+      .prepare(
+        `SELECT gt.*, g.title as goal_title
+         FROM goal_tasks gt
+         JOIN goals g ON g.id = gt.goal_id
+         WHERE gt.employee_id = ? AND gt.status != 'done' AND gt.goal_id = ?
+         ORDER BY gt.created_at`,
+      )
+      .all(employeeId, goalId) as Array<GoalTask & { goal_title: string }>;
+  }
   return getDb()
     .prepare(
       `SELECT gt.*, g.title as goal_title
@@ -226,6 +299,12 @@ export function updateGoalTaskStatus(id: number, status: GoalTask["status"]): vo
   getDb()
     .prepare("UPDATE goal_tasks SET status = ?, updated_at = datetime('now') WHERE id = ?")
     .run(status, id);
+}
+
+export function markGoalTaskDispatched(id: number): void {
+  getDb()
+    .prepare("UPDATE goal_tasks SET dispatched_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND dispatched_at IS NULL")
+    .run(id);
 }
 
 export function updateGoalTask(
@@ -249,7 +328,14 @@ export function updateGoalTask(
     .run(...params);
 }
 
-export function findGoalTaskByTitle(employeeId: string, titleFragment: string): GoalTask | undefined {
+export function findGoalTaskByTitle(employeeId: string, titleFragment: string, goalId?: number): GoalTask | undefined {
+  if (goalId !== undefined) {
+    return getDb()
+      .prepare(
+        "SELECT * FROM goal_tasks WHERE employee_id = ? AND goal_id = ? AND title LIKE ? AND status != 'done' LIMIT 1",
+      )
+      .get(employeeId, goalId, `%${titleFragment}%`) as GoalTask | undefined;
+  }
   return getDb()
     .prepare(
       "SELECT * FROM goal_tasks WHERE employee_id = ? AND title LIKE ? AND status != 'done' LIMIT 1",
@@ -258,7 +344,12 @@ export function findGoalTaskByTitle(employeeId: string, titleFragment: string): 
 }
 
 // Pending decisions
-export function getPendingDecisions(): PendingDecision[] {
+export function getPendingDecisions(goalId?: number): PendingDecision[] {
+  if (goalId !== undefined) {
+    return getDb()
+      .prepare("SELECT * FROM pending_decisions WHERE goal_id = ? ORDER BY created_at DESC")
+      .all(goalId) as PendingDecision[];
+  }
   return getDb()
     .prepare("SELECT * FROM pending_decisions ORDER BY created_at DESC")
     .all() as PendingDecision[];
@@ -270,12 +361,13 @@ export function insertPendingDecision(
   optionA: string,
   optionB?: string,
   options?: string[],
+  goalId?: number,
 ): PendingDecision {
   return getDb()
     .prepare(
-      "INSERT INTO pending_decisions (employee_id, background, option_a, option_b, options) VALUES (?, ?, ?, ?, ?) RETURNING *",
+      "INSERT INTO pending_decisions (employee_id, goal_id, background, option_a, option_b, options) VALUES (?, ?, ?, ?, ?, ?) RETURNING *",
     )
-    .get(employeeId, background, optionA, optionB ?? null, options ? JSON.stringify(options) : null) as PendingDecision;
+    .get(employeeId, goalId ?? null, background, optionA, optionB ?? null, options ? JSON.stringify(options) : null) as PendingDecision;
 }
 
 export function deletePendingDecision(id: number): void {
@@ -288,12 +380,13 @@ export function insertDecision(
   summary: string,
   choice: string,
   context?: string,
+  goalId?: number,
 ): Decision {
   return getDb()
     .prepare(
-      "INSERT INTO decisions (employee_id, summary, choice, context) VALUES (?, ?, ?, ?) RETURNING *",
+      "INSERT INTO decisions (employee_id, goal_id, summary, choice, context) VALUES (?, ?, ?, ?, ?) RETURNING *",
     )
-    .get(employeeId, summary, choice, context ?? null) as Decision;
+    .get(employeeId, goalId ?? null, summary, choice, context ?? null) as Decision;
 }
 
 export function getDecisions(limit = 50, offset = 0): Decision[] {
@@ -305,6 +398,7 @@ export function getDecisions(limit = 50, offset = 0): Decision[] {
 export function getDecisionsFiltered(opts: {
   employeeId?: string;
   status?: string;
+  goalId?: number;
   limit?: number;
   offset?: number;
 }): Decision[] {
@@ -312,6 +406,7 @@ export function getDecisionsFiltered(opts: {
   const params: unknown[] = [];
   if (opts.employeeId) { conditions.push("employee_id = ?"); params.push(opts.employeeId); }
   if (opts.status) { conditions.push("result_tag = ?"); params.push(opts.status); }
+  if (opts.goalId !== undefined) { conditions.push("goal_id = ?"); params.push(opts.goalId); }
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
   params.push(opts.limit ?? 50);
   params.push(opts.offset ?? 0);
@@ -320,10 +415,14 @@ export function getDecisionsFiltered(opts: {
     .all(...params) as Decision[];
 }
 
-export function getDecisionStats(): Record<string, number> {
-  const rows = getDb()
-    .prepare("SELECT result_tag, COUNT(*) as cnt FROM decisions GROUP BY result_tag")
-    .all() as Array<{ result_tag: string; cnt: number }>;
+export function getDecisionStats(goalId?: number): Record<string, number> {
+  const rows = goalId !== undefined
+    ? getDb()
+        .prepare("SELECT result_tag, COUNT(*) as cnt FROM decisions WHERE goal_id = ? GROUP BY result_tag")
+        .all(goalId) as Array<{ result_tag: string; cnt: number }>
+    : getDb()
+        .prepare("SELECT result_tag, COUNT(*) as cnt FROM decisions GROUP BY result_tag")
+        .all() as Array<{ result_tag: string; cnt: number }>;
   return Object.fromEntries(rows.map((r) => [r.result_tag, r.cnt]));
 }
 
@@ -336,6 +435,15 @@ export function searchDecisions(q: string): Decision[] {
     .all(like, like, like) as Decision[];
 }
 
+export function searchDecisionsByGoal(q: string, goalId: number): Decision[] {
+  const like = `%${q}%`;
+  return getDb()
+    .prepare(
+      "SELECT * FROM decisions WHERE goal_id = ? AND (summary LIKE ? OR context LIKE ? OR choice LIKE ?) ORDER BY created_at DESC LIMIT 50",
+    )
+    .all(goalId, like, like, like) as Decision[];
+}
+
 export function updateDecisionTag(id: number, tag: Decision["result_tag"]): void {
   getDb()
     .prepare("UPDATE decisions SET result_tag = ? WHERE id = ?")
@@ -343,19 +451,31 @@ export function updateDecisionTag(id: number, tag: Decision["result_tag"]): void
 }
 
 // Reports
-export function insertReport(employeeId: string, content: string): EmployeeReport {
+export function insertReport(employeeId: string, content: string, goalId?: number): EmployeeReport {
   return getDb()
-    .prepare("INSERT INTO employee_reports (employee_id, content) VALUES (?, ?) RETURNING *")
-    .get(employeeId, content) as EmployeeReport;
+    .prepare("INSERT INTO employee_reports (employee_id, goal_id, content) VALUES (?, ?, ?) RETURNING *")
+    .get(employeeId, goalId ?? null, content) as EmployeeReport;
 }
 
-export function getRecentReports(limit = 20): EmployeeReport[] {
+export function getRecentReports(limit = 20, goalId?: number): EmployeeReport[] {
+  if (goalId !== undefined) {
+    return getDb()
+      .prepare("SELECT * FROM employee_reports WHERE goal_id = ? ORDER BY created_at DESC LIMIT ?")
+      .all(goalId, limit) as EmployeeReport[];
+  }
   return getDb()
     .prepare("SELECT * FROM employee_reports ORDER BY created_at DESC LIMIT ?")
     .all(limit) as EmployeeReport[];
 }
 
-export function getReportsByDays(days: number): EmployeeReport[] {
+export function getReportsByDays(days: number, goalId?: number): EmployeeReport[] {
+  if (goalId !== undefined) {
+    return getDb()
+      .prepare(
+        "SELECT * FROM employee_reports WHERE goal_id = ? AND created_at >= datetime('now', ? ) ORDER BY created_at DESC LIMIT 200",
+      )
+      .all(goalId, `-${days} days`) as EmployeeReport[];
+  }
   return getDb()
     .prepare(
       "SELECT * FROM employee_reports WHERE created_at >= datetime('now', ? ) ORDER BY created_at DESC LIMIT 200",
@@ -363,7 +483,14 @@ export function getReportsByDays(days: number): EmployeeReport[] {
     .all(`-${days} days`) as EmployeeReport[];
 }
 
-export function getEmployeeReports(employeeId: string, limit = 10): EmployeeReport[] {
+export function getEmployeeReports(employeeId: string, limit = 10, goalId?: number): EmployeeReport[] {
+  if (goalId !== undefined) {
+    return getDb()
+      .prepare(
+        "SELECT * FROM employee_reports WHERE employee_id = ? AND goal_id = ? ORDER BY created_at DESC LIMIT ?",
+      )
+      .all(employeeId, goalId, limit) as EmployeeReport[];
+  }
   return getDb()
     .prepare(
       "SELECT * FROM employee_reports WHERE employee_id = ? ORDER BY created_at DESC LIMIT ?",
@@ -415,19 +542,36 @@ export function insertActivity(
     .get(employeeId, eventType, content, meta ? JSON.stringify(meta) : null) as ActivityEvent;
 }
 
-export function getRecentActivity(limit = 50): ActivityEvent[] {
+export function getRecentActivity(limit = 50, goalId?: number): ActivityEvent[] {
+  if (goalId !== undefined) {
+    return getDb()
+      .prepare(
+        "SELECT * FROM activity_log WHERE json_extract(meta, '$.goalId') = ? ORDER BY created_at DESC LIMIT ?",
+      )
+      .all(goalId, limit) as ActivityEvent[];
+  }
   return getDb()
     .prepare("SELECT * FROM activity_log ORDER BY created_at DESC LIMIT ?")
     .all(limit) as ActivityEvent[];
 }
 
-export function getEmployeeActivity(employeeId: string, limit = 5): ActivityEvent[] {
+export function getEmployeeActivity(employeeId: string, limit = 5, goalId?: number): ActivityEvent[] {
+  if (goalId !== undefined) {
+    return getDb()
+      .prepare(
+        "SELECT * FROM activity_log WHERE employee_id = ? AND json_extract(meta, '$.goalId') = ? ORDER BY created_at DESC LIMIT ?",
+      )
+      .all(employeeId, goalId, limit) as ActivityEvent[];
+  }
   return getDb()
     .prepare("SELECT * FROM activity_log WHERE employee_id = ? ORDER BY created_at DESC LIMIT ?")
     .all(employeeId, limit) as ActivityEvent[];
 }
 
-export function getEmployeeActivityForActiveGoals(employeeId: string, limit = 5): ActivityEvent[] {
+export function getEmployeeActivityForActiveGoals(employeeId: string, limit = 5, goalId?: number): ActivityEvent[] {
+  if (goalId !== undefined) {
+    return getEmployeeActivity(employeeId, limit, goalId);
+  }
   const activeGoalIds = getActiveGoals().map((g) => g.id);
   if (activeGoalIds.length === 0) {
     return getEmployeeActivity(employeeId, limit);

@@ -3,7 +3,20 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { getAnyEmployee, getAllEmployees } from "./employees.js";
-import { insertReport, insertActivity, getEmployeeActiveTasks, getEmployeeActivityForActiveGoals, insertPendingDecision } from "./db.js";
+import {
+  findGoalTaskByTitle,
+  getEmployeeActiveTasks,
+  getEmployeeActivityForActiveGoals,
+  getGoalById,
+  getGoalTasks,
+  insertActivity,
+  insertGoalTaskWithMeta,
+  insertPendingDecision,
+  insertReport,
+  markGoalTaskDispatched,
+  updateGoalTask,
+  updateGoalTaskStatus,
+} from "./db.js";
 
 type RunAgentDeps = {
   runEmbeddedPiAgent: (
@@ -56,6 +69,45 @@ const ASSIGN_TASK_RE = /<分配任务给:([^>]+)>([\s\S]*?)<\/分配任务给>/;
 // Only processed at depth=0.
 const DECISION_REQUEST_RE = /<需要决策\s+options="([^"]+)">([\s\S]*?)<\/需要决策>/;
 
+function applyTaskStatusFromReply(
+  employeeId: string,
+  text: string,
+  goalId?: number,
+): { doneCount: number; inProgressCount: number } {
+  let doneCount = 0;
+  let inProgressCount = 0;
+  for (const [tag, status] of [["任务完成", "done"], ["任务进行中", "in_progress"]] as const) {
+    const tagRe = new RegExp(`\\[${tag}[：:](.*?)\\]`, "g");
+    let m: RegExpExecArray | null;
+    while ((m = tagRe.exec(text)) !== null) {
+      const keyword = m[1].trim();
+      if (!keyword) continue;
+      try {
+        const task = findGoalTaskByTitle(employeeId, keyword, goalId);
+        if (task) {
+          updateGoalTaskStatus(task.id, status);
+          if (status === "done") doneCount += 1;
+          if (status === "in_progress") inProgressCount += 1;
+        }
+      } catch {
+        // non-fatal
+      }
+    }
+  }
+  return { doneCount, inProgressCount };
+}
+
+function parseDependsOn(task: { depends_on_task_uids?: string | null }): string[] {
+  if (!task.depends_on_task_uids) return [];
+  try {
+    const parsed = JSON.parse(task.depends_on_task_uids) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((x): x is string => typeof x === "string" && x.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Run an agent call for a company employee, supporting multi-turn tool use.
  * The employee can call `get_colleague_activity` to look up a peer's recent
@@ -70,14 +122,20 @@ export async function runEmployeeAgent(
   deps: RunAgentDeps,
   onChunk?: (text: string) => void,
   depth = 0,
+  goalId?: number,
 ): Promise<string> {
   const employee = getAnyEmployee(employeeId);
   if (!employee) throw new Error(`Unknown employee: ${employeeId}`);
 
   const agentDir = join(homedir(), ".openclaw");
-  const workspaceDir = join(agentDir, "agents", employeeId);
-  const sessionKey = `agent:${employeeId}:company`;
+  const workspaceDir = goalId !== undefined
+    ? join(agentDir, "agents", employeeId, `goal-${goalId}`)
+    : join(agentDir, "agents", employeeId);
+  const sessionKey = goalId !== undefined
+    ? `agent:${employeeId}:goal:${goalId}`
+    : `agent:${employeeId}:company`;
   const sessionFile = join(workspaceDir, "sessions.json");
+  const scopedGoal = goalId !== undefined ? getGoalById(goalId) : undefined;
 
   const baseParams = {
     sessionKey,
@@ -104,12 +162,27 @@ export async function runEmployeeAgent(
   let currentPrompt = prompt;
   let lastText = "";
 
+  const withGoalScope = (rawPrompt: string): string => {
+    if (goalId === undefined) return rawPrompt;
+    const taskLines = getEmployeeActiveTasks(employeeId, goalId)
+      .map((t) => `- [${t.status}] ${t.title}`)
+      .join("\n");
+    const goalTitle = scopedGoal?.title ?? `目标#${goalId}`;
+    return `【当前目标工作区】
+你当前只在这个目标下工作：${goalTitle}（goalId=${goalId}）
+请严格围绕该目标回复，不要混入其他目标的任务。
+${taskLines ? `你在该目标下的待办：\n${taskLines}\n` : "你在该目标下暂时没有未完成任务。\n"}
+
+【本轮请求】
+${rawPrompt}`;
+  };
+
   for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
     const result = await deps.runEmbeddedPiAgent({
       ...baseParams,
       sessionId: `company-${randomUUID()}`,
       runId: randomUUID(),
-      prompt: currentPrompt,
+      prompt: withGoalScope(currentPrompt),
     });
 
     const payloads = result?.payloads ?? [];
@@ -121,7 +194,7 @@ export async function runEmployeeAgent(
     if (queryMatch) {
       const colleagueId = queryMatch[1];
       const limit = Math.min(Number(queryMatch[2] ?? "5"), 10);
-      const activity = getEmployeeActivityForActiveGoals(colleagueId, limit);
+      const activity = getEmployeeActivityForActiveGoals(colleagueId, limit, goalId);
       const colleague = getAnyEmployee(colleagueId);
       const collegeName = colleague ? `${colleague.name}（${colleague.role}）` : colleagueId;
 
@@ -152,12 +225,12 @@ export async function runEmployeeAgent(
           const collabPrompt = `「${sourceName}」请求协作：${task}\n\n请基于你的职能给出具体建议（3-5句）。`;
 
           // 记录协作请求到活动日志
-          insertActivity(targetId, "task_assigned", `[协作请求] ${sourceName} 邀请协作：${task}`);
+          insertActivity(targetId, "task_assigned", `[协作请求] ${sourceName} 邀请协作：${task}`, { goalId, requestedBy: employeeId });
 
           try {
-            const collabReply = await runEmployeeAgent(targetId, collabPrompt, deps, undefined, 1);
+            const collabReply = await runEmployeeAgent(targetId, collabPrompt, deps, undefined, 1, goalId);
             if (collabReply) {
-              insertActivity(targetId, "task_response", `[协作回复] ${targetName}：${collabReply}`);
+              insertActivity(targetId, "task_response", `[协作回复] ${targetName}：${collabReply}`, { goalId, requestedBy: employeeId });
               // 将协作回复注入当前员工的下一轮提示
               currentPrompt = `[协作回复] ${targetName} 的回复：\n${collabReply}\n\n请基于以上协作意见继续完成任务。`;
               continue;
@@ -178,10 +251,10 @@ export async function runEmployeeAgent(
         const toId = delegateMatch[1];
         const message = delegateMatch[2].trim();
         try {
-          const reply = await runEmployeeAgent(toId, message, deps, undefined, 1);
+          const reply = await runEmployeeAgent(toId, message, deps, undefined, 1, goalId);
           if (reply) {
-            insertActivity(toId, "task_response", reply, { delegatedBy: employeeId });
-            insertActivity(employeeId, "task_response", `已委托 ${toId}：${message}`, { delegateTo: toId });
+            insertActivity(toId, "task_response", reply, { delegatedBy: employeeId, goalId });
+            insertActivity(employeeId, "task_response", `已委托 ${toId}：${message}`, { delegateTo: toId, goalId });
           }
         } catch {
           // 目标员工不存在或调用失败时静默忽略，不影响主流程
@@ -205,11 +278,11 @@ export async function runEmployeeAgent(
           allEmps.find((e) => e.role === targetNameOrId);
         if (targetEmployee) {
           const targetId = targetEmployee.id;
-          insertActivity(targetId, "task_assigned", taskContent, { assignedBy: employeeId });
+          insertActivity(targetId, "task_assigned", taskContent, { assignedBy: employeeId, goalId });
           try {
-            const reply = await runEmployeeAgent(targetId, taskContent, deps, undefined, 1);
+            const reply = await runEmployeeAgent(targetId, taskContent, deps, undefined, 1, goalId);
             if (reply) {
-              insertActivity(targetId, "task_response", reply, { assignedBy: employeeId });
+              insertActivity(targetId, "task_response", reply, { assignedBy: employeeId, goalId });
             }
           } catch {
             // 目标员工调用失败时静默忽略，不影响主流程
@@ -227,8 +300,8 @@ export async function runEmployeeAgent(
         const options = decisionMatch[1].split("|").map((s) => s.trim()).filter(Boolean);
         const background = decisionMatch[2].trim();
         if (options.length >= 2) {
-          insertPendingDecision(employeeId, background, options[0], options[1], options);
-          insertActivity(employeeId, "pending_decision", `[待决] ${background}（${options.join(" | ")}）`);
+          insertPendingDecision(employeeId, background, options[0], options[1], options, goalId);
+          insertActivity(employeeId, "pending_decision", `[待决] ${background}（${options.join(" | ")}）`, { goalId });
         }
         break;
       }
@@ -237,7 +310,70 @@ export async function runEmployeeAgent(
     break; // 无任何工具标签 → 完成
   }
 
+  if (lastText) {
+    const status = applyTaskStatusFromReply(employeeId, lastText, goalId);
+    if (goalId !== undefined && status.doneCount > 0) {
+      void dispatchReadyTasksForGoal(goalId, deps).catch(() => void 0);
+    }
+  }
   return lastText;
+}
+
+export async function dispatchReadyTasksForGoal(
+  goalId: number,
+  deps: RunAgentDeps,
+): Promise<void> {
+  const goal = getGoalById(goalId);
+  if (!goal) return;
+  const tasks = getGoalTasks(goalId);
+  if (tasks.length === 0) return;
+
+  const byUid = new Map<string, (typeof tasks)[number]>();
+  for (const t of tasks) if (t.task_uid) byUid.set(t.task_uid, t);
+
+  const ready = tasks
+    .filter((t) => t.status === "pending" && t.dispatched_at == null)
+    .filter((t) => {
+      const depsUids = parseDependsOn(t);
+      if (depsUids.length === 0) return true;
+      return depsUids.every((uid) => byUid.get(uid)?.status === "done");
+    })
+    .sort((a, b) => (a.sequence - b.sequence) || (a.id - b.id));
+
+  // Sequential by default: one active dispatch at a time.
+  const maxParallel = 1;
+  for (const task of ready.slice(0, maxParallel)) {
+    markGoalTaskDispatched(task.id);
+    insertActivity(
+      task.employee_id,
+      "task_assigned",
+      `收到任务：${task.title}（目标：${goal.title}）`,
+      { goalId, taskId: task.id, taskUid: task.task_uid, phase: "dispatched" },
+    );
+    try {
+      const prompt = `CEO 下发了目标内任务，请直接产出首版可交付物。
+
+目标：${goal.title}${goal.description ? `\n目标描述：${goal.description}` : ""}
+任务：${task.title}
+${task.deliverable ? `可交付物：${task.deliverable}` : ""}
+${task.done_definition ? `完成标准：${task.done_definition}` : ""}
+
+要求：
+1. 直接给出可交付内容，不要只说“我会做”
+2. 若有阻塞，使用 [待决] 背景: ... | 选A: ... | 选B: ...
+3. 已启动请加 [任务进行中: ${task.title.slice(0, 12)}]
+4. 全部完成请加 [任务完成: ${task.title.slice(0, 12)}]`;
+      const reply = await runEmployeeAgent(task.employee_id, prompt, deps, undefined, 0, goalId);
+      if (reply) {
+        insertActivity(task.employee_id, "task_response", reply, { goalId, taskId: task.id, taskUid: task.task_uid });
+        try { updateGoalTaskStatus(task.id, "in_progress"); } catch { /* non-fatal */ }
+        scheduleFollowUp(task.employee_id, deps, 60 * 1000, 1, goalId);
+      }
+    } catch {
+      // Expose failure by reopening task for manual retry.
+      updateGoalTask(task.id, { status: "pending" });
+    }
+  }
 }
 
 /**
@@ -251,12 +387,31 @@ export async function runEmployeeCron(
   const employee = getAnyEmployee(employeeId);
   if (!employee) return;
 
-  // Inject current task context so the report is goal-driven
+  // 每个目标单独汇报，避免多目标串上下文
   const activeTasks = getEmployeeActiveTasks(employeeId);
-  let prompt = employee.cronPrompt;
-  if (activeTasks.length > 0) {
-    const taskLines = activeTasks
-      .map((t) => `  - [${t.status === "in_progress" ? "进行中" : "待开始"}] ${t.title}（目标：${t.goal_title}）`)
+  const grouped = new Map<number, Array<(typeof activeTasks)[number]>>();
+  for (const t of activeTasks) {
+    if (!grouped.has(t.goal_id)) grouped.set(t.goal_id, []);
+    grouped.get(t.goal_id)!.push(t);
+  }
+
+  if (grouped.size === 0) {
+    try {
+      const reply = await runEmployeeAgent(employeeId, employee.cronPrompt, deps);
+      if (reply) {
+        insertReport(employeeId, reply);
+        insertActivity(employeeId, "report", reply);
+      }
+    } catch {
+      // cron failures are silent — will retry next scheduled run
+    }
+    return;
+  }
+
+  for (const [goalId, tasks] of grouped) {
+    let prompt = employee.cronPrompt;
+    const taskLines = tasks
+      .map((t) => `  - [${t.status === "in_progress" ? "进行中" : "待开始"}] ${t.title}`)
       .join("\n");
     prompt += `
 
@@ -268,16 +423,16 @@ ${taskLines}
 - 如某项任务正在进行，在回复中加 [任务进行中: 任务标题关键词]
 - 如某项任务遇到阻塞需要 CEO 决策，加 [待决] 标记
 - 汇报以 [进展汇报] 开头`;
-  }
 
-  try {
-    const reply = await runEmployeeAgent(employeeId, prompt, deps);
-    if (reply) {
-      insertReport(employeeId, reply);
-      insertActivity(employeeId, "report", reply);
+    try {
+      const reply = await runEmployeeAgent(employeeId, prompt, deps, undefined, 0, goalId);
+      if (reply) {
+        insertReport(employeeId, reply, goalId);
+        insertActivity(employeeId, "report", reply, { goalId });
+      }
+    } catch {
+      // cron failures are silent — will retry next scheduled run
     }
-  } catch {
-    // cron failures are silent — will retry next scheduled run
   }
 }
 
@@ -293,6 +448,7 @@ export function scheduleFollowUp(
   deps: RunAgentDeps,
   delayMs = 2 * 60 * 1000,
   iteration = 1,
+  goalId?: number,
 ): void {
   if (iteration > MAX_FOLLOWUP_ITERATIONS) return;
 
@@ -306,17 +462,17 @@ export function scheduleFollowUp(
 - 完成全部任务时加 [任务完成: 关键词]
 - 仍在推进时加 [任务进行中: 关键词]`;
 
-    void runEmployeeAgent(employeeId, followUpPrompt, deps)
+    void runEmployeeAgent(employeeId, followUpPrompt, deps, undefined, 0, goalId)
       .then((reply) => {
         if (!reply) return;
-        insertReport(employeeId, reply);
-        insertActivity(employeeId, "task_response", reply);
+        insertReport(employeeId, reply, goalId);
+        insertActivity(employeeId, "task_response", reply, { goalId });
 
         const isDone = reply.includes("[任务完成");
         const isBlocked = reply.includes("[待决]");
         // Continue the work loop if still in progress and not blocked
         if (!isDone && !isBlocked) {
-          scheduleFollowUp(employeeId, deps, 2 * 60 * 1000, iteration + 1);
+          scheduleFollowUp(employeeId, deps, 2 * 60 * 1000, iteration + 1, goalId);
         }
       })
       .catch(() => void 0);
@@ -333,7 +489,8 @@ export async function decomposeGoal(
   description: string,
   deps: RunAgentDeps,
 ): Promise<void> {
-  const employeeList = getAllEmployees().map(
+  const employees = getAllEmployees();
+  const employeeList = employees.map(
     (e) => `- ${e.role} (${e.name}, id=${e.id})`,
   ).join("\n");
 
@@ -345,94 +502,146 @@ ${description ? `描述：${description}` : ""}
 员工列表：
 ${employeeList}
 
-请将这个目标分解为每个员工需要承担的具体任务。
+请将这个目标分解为“有依赖关系”的执行计划，要求：
+1. 每条任务必须可验证，不要泛泛描述
+2. 明确依赖：后续任务必须依赖前置任务（不要所有任务都并行）
+3. 默认串行推进：尽量只有第一个任务无依赖，其他任务依赖前序任务
+
 按以下 JSON 格式输出（只输出 JSON，不要其他文字）：
 {
   "tasks": [
-    { "employee_id": "company-pm", "title": "任务标题（一句话）" },
-    { "employee_id": "company-eng", "title": "任务标题" },
-    ...
+    {
+      "uid": "T1",
+      "employee_id": "company-pm",
+      "title": "任务标题（一句话）",
+      "depends_on": [],
+      "deliverable": "交付物描述（可检查）",
+      "done_definition": "完成定义（可验收）"
+    }
   ]
 }`;
 
-  const { insertGoalTask, updateGoalTaskStatus } = await import("./db.js");
+  // Idempotency guard: avoid duplicate decomposition for the same goal.
+  if (getGoalTasks(goalId).length > 0) return;
+
   const agentDir = join(homedir(), ".openclaw");
   // Use a per-goal workspaceDir so each decomposition starts with a clean context
   // and doesn't inherit growing history from previous goals.
   const workspaceDir = join(agentDir, "agents", "company-decomposer", `goal-${goalId}`);
+  const knownEmployeeIds = new Set(employees.map((e) => e.id));
+  const result = await deps.runEmbeddedPiAgent({
+    sessionId: `decompose-${randomUUID()}`,
+    sessionKey: `agent:company-decomposer:goal-${goalId}`,
+    agentId: "company-decomposer",
+    sessionFile: join(workspaceDir, "sessions.json"),
+    workspaceDir,
+    agentDir,
+    config: deps.config,
+    prompt: decompositionPrompt,
+    trigger: "user",
+    senderIsOwner: true,
+    disableMessageTool: true,
+    disableTools: true,
+    runId: randomUUID(),
+    timeoutMs: 120_000, // 2 minutes for decomposition
+    ...resolveAgentModel(deps.config),
+  });
 
-  try {
-    const result = await deps.runEmbeddedPiAgent({
-      sessionId: `decompose-${randomUUID()}`,
-      sessionKey: `agent:company-decomposer:goal-${goalId}`,
-      agentId: "company-decomposer",
-      sessionFile: join(workspaceDir, "sessions.json"),
-      workspaceDir,
-      agentDir,
-      config: deps.config,
-      prompt: decompositionPrompt,
-      trigger: "user",
-      senderIsOwner: true,
-      disableMessageTool: true,
-      disableTools: true,
-      runId: randomUUID(),
-      timeoutMs: 120_000, // 2 minutes for decomposition
-      ...resolveAgentModel(deps.config),
-    });
-
-    // Extract text from payloads (same as runEmployeeAgent)
-    const payloads = result?.payloads ?? [];
-    const text = [...payloads].reverse().find((p) => p.text?.trim())?.text ?? "";
-    // Extract JSON from response
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) return;
-    const parsed = JSON.parse(match[0]) as {
-      tasks: Array<{ employee_id: string; title: string }>;
-    };
-    const insertedTasks: Array<{ employee_id: string; title: string; id: number }> = [];
-    for (const task of parsed.tasks ?? []) {
-      if (task.employee_id && task.title) {
-        const inserted = insertGoalTask(goalId, task.employee_id, task.title);
-        insertedTasks.push({ ...task, id: inserted.id });
-        // Log the assignment to activity
-        insertActivity(task.employee_id, "task_assigned", `收到任务：${task.title}（目标：${title}）`, { goalId, taskTitle: task.title });
-      }
-    }
-
-    // Notify each assigned employee serially with a delay between calls
-    // to avoid saturating the agent lane (all parallel calls compete for lane=main)
-    if (insertedTasks.length > 0) {
-      void (async () => {
-        for (const task of insertedTasks) {
-          await new Promise((r) => setTimeout(r, 2_000)); // 2s gap between employees
-          try {
-            const prompt = `CEO 刚刚设置了新的季度目标，你被分配了一项任务。请立即开始执行并输出第一份可交付成果。
-
-目标：${title}${description ? `\n目标描述：${description}` : ""}
-你的任务：${task.title}
-
-要求：
-1. 不要只写"我会做"——直接输出你作为${task.employee_id.replace("company-", "")}能立刻产出的内容（草稿、方案、分析、列表等）
-2. 哪怕信息不完整，也先给出最佳假设下的初稿，让CEO看到实质内容
-3. 如果某个关键方向必须CEO拍板才能继续，在末尾加 [待决] 背景: ... | 选A: ... | 选B: ...
-4. 如果已开始执行，加 [任务进行中: ${task.title.substring(0, 10)}]`;
-            const reply = await runEmployeeAgent(task.employee_id, prompt, deps);
-            if (reply) {
-              insertActivity(task.employee_id, "task_response", reply, { goalId, taskTitle: task.title });
-              // Employee acknowledged → mark task as in_progress
-              try { updateGoalTaskStatus(task.id, "in_progress"); } catch { /* non-fatal */ }
-              // Schedule follow-up so employee executes instead of just acknowledging
-              scheduleFollowUp(task.employee_id, deps, 60 * 1000);
-            }
-          } catch {
-            // non-fatal
-          }
-        }
-      })();
-    }
-  } catch {
-    // decomposition failure is non-fatal
+  // Extract text from payloads (same as runEmployeeAgent)
+  const payloads = result?.payloads ?? [];
+  const text = [...payloads].reverse().find((p) => p.text?.trim())?.text ?? "";
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) {
+    throw new Error(`目标拆解输出非 JSON（goalId=${goalId}）`);
   }
+
+  let parsed: {
+    tasks: Array<{
+      uid: string;
+      employee_id: string;
+      title: string;
+      depends_on?: string[];
+      deliverable?: string;
+      done_definition?: string;
+    }>;
+  };
+  try {
+    parsed = JSON.parse(match[0]) as {
+      tasks: Array<{
+        uid: string;
+        employee_id: string;
+        title: string;
+        depends_on?: string[];
+        deliverable?: string;
+        done_definition?: string;
+      }>;
+    };
+  } catch {
+    throw new Error(`目标拆解 JSON 解析失败（goalId=${goalId}）`);
+  }
+
+  const unknownEmployeeIds = (parsed.tasks ?? [])
+    .map((task) => task.employee_id)
+    .filter(Boolean)
+    .filter((id) => !knownEmployeeIds.has(id));
+  if (unknownEmployeeIds.length > 0) {
+    throw new Error(`目标拆解包含未知员工ID: ${[...new Set(unknownEmployeeIds)].join(", ")}`);
+  }
+
+  const uidList = (parsed.tasks ?? []).map((task) => task.uid).filter(Boolean);
+  const duplicatedUids = uidList.filter((uid, idx) => uidList.indexOf(uid) !== idx);
+  if (duplicatedUids.length > 0) {
+    throw new Error(`目标拆解任务 UID 重复: ${[...new Set(duplicatedUids)].join(", ")}`);
+  }
+
+  const knownUidSet = new Set(uidList);
+  const badDeps: string[] = [];
+  for (const task of parsed.tasks ?? []) {
+    for (const dep of (task.depends_on ?? [])) {
+      if (!knownUidSet.has(dep)) badDeps.push(`${task.uid}->${dep}`);
+      if (dep === task.uid) badDeps.push(`${task.uid}->${dep}(self)`);
+    }
+  }
+  if (badDeps.length > 0) {
+    throw new Error(`目标拆解依赖非法: ${[...new Set(badDeps)].join(", ")}`);
+  }
+
+  const plannedTasks: Array<{
+    uid: string;
+    employee_id: string;
+    title: string;
+    depends_on: string[];
+    deliverable: string;
+    done_definition: string;
+    sequence: number;
+  }> = (parsed.tasks ?? [])
+    .filter((task) => Boolean(task.uid && task.employee_id && task.title))
+    .filter((task) => knownEmployeeIds.has(task.employee_id))
+    .map((task, idx) => ({
+      uid: task.uid.trim(),
+      employee_id: task.employee_id,
+      title: task.title.trim(),
+      depends_on: (task.depends_on ?? []).filter(Boolean),
+      deliverable: (task.deliverable ?? "").trim() || "提交可评审的一页执行产出",
+      done_definition: (task.done_definition ?? "").trim() || "有明确可验收结果并可继续下游任务",
+      sequence: idx,
+    }));
+  if (plannedTasks.length === 0) {
+    throw new Error(`目标拆解返回空任务列表（goalId=${goalId}）`);
+  }
+
+  for (const task of plannedTasks) {
+    insertGoalTaskWithMeta(goalId, task.employee_id, task.title, {
+      taskUid: task.uid,
+      dependsOnTaskUids: task.depends_on,
+      deliverable: task.deliverable,
+      doneDefinition: task.done_definition,
+      sequence: task.sequence,
+    });
+  }
+
+  // Start execution by dispatching the first ready tasks (sequential mode by default).
+  await dispatchReadyTasksForGoal(goalId, deps);
 }
 
 /**

@@ -1,4 +1,4 @@
-import { C as insertReport, D as updateGoalTask, E as updateGoal, O as updateGoalTaskStatus, S as insertPendingDecision, T as updateDecisionTag, _ as getRecentReports, a as findGoalTaskByTitle, b as insertCustomEmployee, c as getDecisionStats, d as getEmployeeActiveTasks, f as getEmployeeActivityForActiveGoals, g as getRecentActivity, h as getPendingDecisions, i as deletePendingDecision, l as getDecisions, m as getGoalTasks, n as deleteCustomEmployee, o as getActiveGoals, p as getEmployeeReports, r as deleteGoal, s as getCustomEmployees, u as getDecisionsFiltered, v as getReportsByDays, w as searchDecisions, x as insertDecision, y as insertActivity } from "./db-v3KNaPQv.js";
+import { A as updateGoal, C as insertGoalTaskWithMeta, D as searchDecisions, E as markGoalTaskDispatched, M as updateGoalTaskStatus, O as searchDecisionsByGoal, S as insertDecision, T as insertReport, _ as getRecentActivity, a as findGoalTaskByTitle, b as insertActivity, c as getDecisionStats, d as getEmployeeActiveTasks, f as getEmployeeActivityForActiveGoals, g as getPendingDecisions, h as getGoalTasks, i as deletePendingDecision, j as updateGoalTask, k as updateDecisionTag, l as getDecisions, m as getGoalById, n as deleteCustomEmployee, o as getActiveGoals, p as getEmployeeReports, r as deleteGoal, s as getCustomEmployees, u as getDecisionsFiltered, v as getRecentReports, w as insertPendingDecision, x as insertCustomEmployee, y as getReportsByDays } from "./db-BCu1HftC.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -42,6 +42,11 @@ const EMPLOYEES = [
 - 主动汇报：每天汇总各员工进展，输出「进展 + 风险 + 下一步分工」给 CEO。
 - 决策请求：遇到跨部门资源冲突、优先级冲突或延期风险时，向 CEO 发起待决请求（背景 + A/B 方案）。
 - 执行指令：收到 CEO 指令后，拆解为可执行任务并明确责任人、截止时间和验收标准。
+调度原则（必须遵守）：
+- 默认串行推进：一次只推动 1 个关键任务进入执行，除非你明确说明“可并行且无依赖冲突”。
+- 强依赖优先：先完成上游，再启动下游，不要把有依赖关系的任务同时派发。
+- 汇报格式必须包含：当前里程碑、当前负责人、阻塞点、下一步负责人。
+- 你是 CEO 的唯一对话窗口：CEO 的输入由你整合、拆解、派发，其他角色不直接对 CEO 汇报。
 沟通风格：全局视角、结论先行、突出阻塞和依赖，回复控制在 4-6 句话。
 管理工具：
 - 查询同事近期动态：<查同事 id="EMPLOYEE_ID"/>（例：<查同事 id="company-pm"/>）
@@ -139,6 +144,7 @@ function getAnyEmployee(id) {
 }
 //#endregion
 //#region src/api.ts
+const CHIEF_ID$1 = "company-coo";
 function json(res, data, status = 200) {
 	res.writeHead(status, { "Content-Type": "application/json" });
 	res.end(JSON.stringify(data));
@@ -161,14 +167,20 @@ async function handleApiRequest(ctx) {
 	const { req, res } = ctx;
 	const url = new URL(req.url ?? "/", "http://localhost");
 	const path = url.pathname;
+	const parseGoalId = (v) => {
+		if (!v) return void 0;
+		const n = Number(v);
+		return Number.isFinite(n) && n > 0 ? n : void 0;
+	};
 	try {
 		if (req.method === "GET" && path === "/company/api/hall") {
-			const goalsWithTasks = getActiveGoals().map((g) => ({
+			const goalId = parseGoalId(url.searchParams.get("goalId"));
+			const goalsWithTasks = getActiveGoals().filter((g) => goalId === void 0 || g.id === goalId).map((g) => ({
 				...g,
 				tasks: getGoalTasks(g.id)
 			}));
-			const pending = getPendingDecisions();
-			const reports = getRecentReports(10);
+			const pending = getPendingDecisions(goalId);
+			const reports = getRecentReports(10, goalId);
 			const customIds = new Set(getCustomEmployees().map((c) => c.id));
 			return json(res, {
 				goals: goalsWithTasks,
@@ -195,35 +207,42 @@ async function handleApiRequest(ctx) {
 				isCustom: customIds.has(e.id)
 			})) });
 		}
-		if (req.method === "GET" && path === "/company/api/decisions/stats") return json(res, { stats: getDecisionStats() });
+		if (req.method === "GET" && path === "/company/api/decisions/stats") return json(res, { stats: getDecisionStats(parseGoalId(url.searchParams.get("goalId"))) });
 		if (req.method === "GET" && path === "/company/api/decisions") {
 			const q = url.searchParams.get("q");
 			const employee = url.searchParams.get("employee") ?? "";
 			const status = url.searchParams.get("status") ?? "";
+			const goalId = parseGoalId(url.searchParams.get("goalId"));
 			const limit = Number(url.searchParams.get("limit") ?? "50");
 			const offset = Number(url.searchParams.get("offset") ?? "0");
 			let decisions;
-			if (q) decisions = searchDecisions(q);
+			if (q) decisions = goalId !== void 0 ? searchDecisionsByGoal(q, goalId) : searchDecisions(q);
 			else if (employee || status) decisions = getDecisionsFiltered({
 				employeeId: employee || void 0,
 				status: status || void 0,
+				goalId,
 				limit,
 				offset
 			});
-			else decisions = getDecisions(limit, offset);
+			else decisions = goalId !== void 0 ? getDecisionsFiltered({
+				goalId,
+				limit,
+				offset
+			}) : getDecisions(limit, offset);
 			return json(res, { decisions });
 		}
 		if (req.method === "POST" && path === "/company/api/decisions") {
 			const { pendingId, employeeId, summary, choice, context } = await parseBody(req);
 			if (!employeeId || !summary || !choice) return json(res, { error: "employeeId, summary, choice are required" }, 400);
 			if (pendingId) deletePendingDecision(pendingId);
-			const decision = insertDecision(employeeId, summary, choice, context);
+			const decision = insertDecision(employeeId, summary, choice, context, goalId);
 			const employee = getAnyEmployee(employeeId);
 			const empName = employee?.name ?? employeeId;
 			insertActivity(employeeId, "decision_received", `CEO 确认了决策：${summary}\n👉 选择：${choice}${context ? `\n补充：${context}` : ""}`, {
 				summary,
 				choice,
-				phase: "confirmed"
+				phase: "confirmed",
+				goalId
 			});
 			if (employee) {
 				const notifyPrompt = `CEO 对你发起的请求做出了决策。
@@ -232,17 +251,16 @@ CEO 的选择：${choice}
 ${context ? `附加说明：${context}` : ""}
 请确认收到并说明你的下一步行动计划（2-3 句话）。`;
 				setImmediate(() => {
-					ctx.runAgent(employeeId, notifyPrompt).then((reply) => {
+					ctx.runAgent(employeeId, notifyPrompt, goalId).then((reply) => {
 						if (reply) {
 							insertActivity(employeeId, "task_response", `${empName} 回复：${reply}`, {
 								summary,
 								choice,
-								phase: "response"
+								phase: "response",
+								goalId
 							});
 							updateDecisionTag(decision.id, "in_progress");
-							ctx.scheduleFollowUp(employeeId, 60 * 1e3).then(() => {
-								updateDecisionTag(decision.id, "done");
-							}).catch(() => void 0);
+							ctx.scheduleFollowUp(employeeId, 60 * 1e3, goalId);
 						}
 					}).catch(() => void 0);
 				});
@@ -252,19 +270,24 @@ ${context ? `附加说明：${context}` : ""}
 		if (req.method === "POST" && path === "/company/api/decisions/pending") {
 			const { employeeId, background, optionA, optionB, options } = await parseBody(req);
 			if (!employeeId || !background || !optionA) return json(res, { error: "employeeId, background, optionA are required" }, 400);
-			const pending = insertPendingDecision(employeeId, background, optionA, optionB, options);
-			insertActivity(employeeId, "pending_decision", `[待决] ${background}（${options && options.length >= 2 ? options.join(" | ") : optionB ? `选A: ${optionA} | 选B: ${optionB}` : optionA}）`);
+			const pending = insertPendingDecision(employeeId, background, optionA, optionB, options, goalId);
+			insertActivity(employeeId, "pending_decision", `[待决] ${background}（${options && options.length >= 2 ? options.join(" | ") : optionB ? `选A: ${optionA} | 选B: ${optionB}` : optionA}）`, { goalId });
 			return json(res, { pending });
 		}
 		if (req.method === "GET" && path === "/company/api/reports") {
-			if (url.searchParams.has("days")) return json(res, { reports: getReportsByDays(Math.min(Math.max(Number(url.searchParams.get("days") ?? "7"), 1), 30)) });
-			return json(res, { reports: getRecentReports(Number(url.searchParams.get("limit") ?? "30")) });
+			const goalId = parseGoalId(url.searchParams.get("goalId"));
+			if (url.searchParams.has("days")) return json(res, { reports: getReportsByDays(Math.min(Math.max(Number(url.searchParams.get("days") ?? "7"), 1), 30), goalId) });
+			return json(res, { reports: getRecentReports(Number(url.searchParams.get("limit") ?? "30"), goalId) });
 		}
-		if (req.method === "GET" && path === "/company/api/activity") return json(res, { activity: getRecentActivity(Number(url.searchParams.get("limit") ?? "60")) });
+		if (req.method === "GET" && path === "/company/api/activity") {
+			const goalId = parseGoalId(url.searchParams.get("goalId"));
+			return json(res, { activity: getRecentActivity(Number(url.searchParams.get("limit") ?? "60"), goalId) });
+		}
 		if (req.method === "POST" && path.match(/^\/company\/api\/chat\/[^/]+\/stream$/)) {
 			const employeeId = path.slice(18).replace("/stream", "");
 			if (!getAnyEmployee(employeeId)) return json(res, { error: `Unknown employee: ${employeeId}` }, 404);
-			const { message } = await parseBody(req);
+			if (employeeId !== CHIEF_ID$1) return json(res, { error: "仅支持与总指挥AI直接对话，请使用 company-coo" }, 403);
+			const { message, goalId } = await parseBody(req);
 			if (!message) return json(res, { error: "message is required" }, 400);
 			res.writeHead(200, {
 				"Content-Type": "text/event-stream",
@@ -278,7 +301,7 @@ ${context ? `附加说明：${context}` : ""}
 			try {
 				await ctx.runAgentStream(employeeId, message, (chunk) => {
 					write("chunk", chunk);
-				});
+				}, goalId);
 				write("done", "");
 			} catch (err) {
 				write("error", err instanceof Error ? err.message : String(err));
@@ -289,20 +312,46 @@ ${context ? `附加说明：${context}` : ""}
 		if (req.method === "POST" && path.startsWith("/company/api/chat/")) {
 			const employeeId = path.slice(18);
 			if (!getAnyEmployee(employeeId)) return json(res, { error: `Unknown employee: ${employeeId}` }, 404);
-			const { message } = await parseBody(req);
+			if (employeeId !== CHIEF_ID$1) return json(res, { error: "仅支持与总指挥AI直接对话，请使用 company-coo" }, 403);
+			const { message, goalId } = await parseBody(req);
 			if (!message) return json(res, { error: "message is required" }, 400);
-			return json(res, { reply: await ctx.runAgent(employeeId, message) });
+			return json(res, { reply: await ctx.runAgent(employeeId, message, goalId) });
 		}
 		if (req.method === "POST" && path === "/company/api/goals") {
 			const { title, description, quarter } = await parseBody(req);
 			if (!title) return json(res, { error: "title is required" }, 400);
-			const { insertGoal } = await import("./db-v3KNaPQv.js").then((n) => n.t);
+			const { insertGoal } = await import("./db-BCu1HftC.js").then((n) => n.t);
 			const goal = insertGoal(title, description ?? "", quarter ?? "");
-			ctx.decomposGoal(goal.title, goal.description ?? "").catch(() => void 0);
+			ctx.decomposGoal(goal.id, goal.title, goal.description ?? "").catch((err) => {
+				const msg = err instanceof Error ? err.message : String(err);
+				console.error(`[company] goal decomposition failed goalId=${goal.id}: ${msg}`);
+				const background = `目标「${goal.title}」拆解失败：${msg}`;
+				insertPendingDecision("company-coo", background, "点击「重新拆解任务」重试", "检查模型配置/网络后重试", ["点击「重新拆解任务」重试", "检查模型配置/网络后重试"], goal.id);
+				insertActivity("company-coo", "pending_decision", `[待决] ${background}`, {
+					goalId: goal.id,
+					phase: "decompose_error"
+				});
+			});
 			return json(res, {
 				goal,
 				message: "目标已设置，AI 正在拆解任务..."
 			});
+		}
+		if (req.method === "POST" && /^\/company\/api\/goals\/\d+\/decompose$/.test(path)) {
+			const id = Number(path.split("/")[4]);
+			const goal = getActiveGoals().find((g) => g.id === id);
+			if (!goal) return json(res, { error: "Goal not found" }, 404);
+			try {
+				await ctx.decomposGoal(goal.id, goal.title, goal.description ?? "");
+				return json(res, {
+					ok: true,
+					message: "重拆解成功"
+				});
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				console.error(`[company] manual decomposition failed goalId=${goal.id}: ${msg}`);
+				return json(res, { error: `重拆解失败：${msg}` }, 500);
+			}
 		}
 		if (req.method === "PATCH" && /^\/company\/api\/goals\/\d+$/.test(path)) {
 			const id = Number(path.split("/").pop());
@@ -393,6 +442,40 @@ const COLLAB_TRIGGER_RE = /<触发协作\s+to="([^"]+)"\s+task="([^"]+)"\s*\/>/;
 const DELEGATE_COLLEAGUE_RE = /<委托同事\s+id="([^"]+)">([\s\S]*?)<\/委托同事>/;
 const ASSIGN_TASK_RE = /<分配任务给:([^>]+)>([\s\S]*?)<\/分配任务给>/;
 const DECISION_REQUEST_RE = /<需要决策\s+options="([^"]+)">([\s\S]*?)<\/需要决策>/;
+function applyTaskStatusFromReply(employeeId, text, goalId) {
+	let doneCount = 0;
+	let inProgressCount = 0;
+	for (const [tag, status] of [["任务完成", "done"], ["任务进行中", "in_progress"]]) {
+		const tagRe = new RegExp(`\\[${tag}[：:](.*?)\\]`, "g");
+		let m;
+		while ((m = tagRe.exec(text)) !== null) {
+			const keyword = m[1].trim();
+			if (!keyword) continue;
+			try {
+				const task = findGoalTaskByTitle(employeeId, keyword, goalId);
+				if (task) {
+					updateGoalTaskStatus(task.id, status);
+					if (status === "done") doneCount += 1;
+					if (status === "in_progress") inProgressCount += 1;
+				}
+			} catch {}
+		}
+	}
+	return {
+		doneCount,
+		inProgressCount
+	};
+}
+function parseDependsOn(task) {
+	if (!task.depends_on_task_uids) return [];
+	try {
+		const parsed = JSON.parse(task.depends_on_task_uids);
+		if (!Array.isArray(parsed)) return [];
+		return parsed.filter((x) => typeof x === "string" && x.trim().length > 0);
+	} catch {
+		return [];
+	}
+}
 /**
 * Run an agent call for a company employee, supporting multi-turn tool use.
 * The employee can call `get_colleague_activity` to look up a peer's recent
@@ -401,15 +484,18 @@ const DECISION_REQUEST_RE = /<需要决策\s+options="([^"]+)">([\s\S]*?)<\/需�
 *
 * Session key is stable per employee so memory persists across calls.
 */
-async function runEmployeeAgent(employeeId, prompt, deps, onChunk, depth = 0) {
+async function runEmployeeAgent(employeeId, prompt, deps, onChunk, depth = 0, goalId) {
 	const employee = getAnyEmployee(employeeId);
 	if (!employee) throw new Error(`Unknown employee: ${employeeId}`);
 	const agentDir = join(homedir(), ".openclaw");
-	const workspaceDir = join(agentDir, "agents", employeeId);
+	const workspaceDir = goalId !== void 0 ? join(agentDir, "agents", employeeId, `goal-${goalId}`) : join(agentDir, "agents", employeeId);
+	const sessionKey = goalId !== void 0 ? `agent:${employeeId}:goal:${goalId}` : `agent:${employeeId}:company`;
+	const sessionFile = join(workspaceDir, "sessions.json");
+	const scopedGoal = goalId !== void 0 ? getGoalById(goalId) : void 0;
 	const baseParams = {
-		sessionKey: `agent:${employeeId}:company`,
+		sessionKey,
 		agentId: employeeId,
-		sessionFile: join(workspaceDir, "sessions.json"),
+		sessionFile,
 		workspaceDir,
 		agentDir,
 		config: deps.config,
@@ -425,19 +511,30 @@ async function runEmployeeAgent(employeeId, prompt, deps, onChunk, depth = 0) {
 	};
 	let currentPrompt = prompt;
 	let lastText = "";
+	const withGoalScope = (rawPrompt) => {
+		if (goalId === void 0) return rawPrompt;
+		const taskLines = getEmployeeActiveTasks(employeeId, goalId).map((t) => `- [${t.status}] ${t.title}`).join("\n");
+		return `【当前目标工作区】
+你当前只在这个目标下工作：${scopedGoal?.title ?? `目标#${goalId}`}（goalId=${goalId}）
+请严格围绕该目标回复，不要混入其他目标的任务。
+${taskLines ? `你在该目标下的待办：\n${taskLines}\n` : "你在该目标下暂时没有未完成任务。\n"}
+
+【本轮请求】
+${rawPrompt}`;
+	};
 	for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
 		const text = [...(await deps.runEmbeddedPiAgent({
 			...baseParams,
 			sessionId: `company-${randomUUID()}`,
 			runId: randomUUID(),
-			prompt: currentPrompt
+			prompt: withGoalScope(currentPrompt)
 		}))?.payloads ?? []].reverse().find((p) => p.text?.trim())?.text ?? "";
 		if (text) lastText = text;
 		const queryMatch = COLLEAGUE_QUERY_RE.exec(lastText);
 		if (queryMatch) {
 			const colleagueId = queryMatch[1];
 			const limit = Math.min(Number(queryMatch[2] ?? "5"), 10);
-			const activity = getEmployeeActivityForActiveGoals(colleagueId, limit);
+			const activity = getEmployeeActivityForActiveGoals(colleagueId, limit, goalId);
 			const colleague = getAnyEmployee(colleagueId);
 			const collegeName = colleague ? `${colleague.name}（${colleague.role}）` : colleagueId;
 			currentPrompt = `[同事动态] ${collegeName} 的最新 ${limit} 条记录：\n\n${activity.length > 0 ? activity.map((a) => `[${a.event_type}] ${a.created_at}\n${a.content}`).join("\n\n---\n\n") : `${collegeName} 暂无近期动态`}\n\n请基于以上信息继续完成任务。`;
@@ -453,11 +550,17 @@ async function runEmployeeAgent(employeeId, prompt, deps, onChunk, depth = 0) {
 					const sourceName = `${employee.name}（${employee.role}）`;
 					const targetName = `${targetEmployee.name}（${targetEmployee.role}）`;
 					const collabPrompt = `「${sourceName}」请求协作：${task}\n\n请基于你的职能给出具体建议（3-5句）。`;
-					insertActivity(targetId, "task_assigned", `[协作请求] ${sourceName} 邀请协作：${task}`);
+					insertActivity(targetId, "task_assigned", `[协作请求] ${sourceName} 邀请协作：${task}`, {
+						goalId,
+						requestedBy: employeeId
+					});
 					try {
-						const collabReply = await runEmployeeAgent(targetId, collabPrompt, deps, void 0, 1);
+						const collabReply = await runEmployeeAgent(targetId, collabPrompt, deps, void 0, 1, goalId);
 						if (collabReply) {
-							insertActivity(targetId, "task_response", `[协作回复] ${targetName}：${collabReply}`);
+							insertActivity(targetId, "task_response", `[协作回复] ${targetName}：${collabReply}`, {
+								goalId,
+								requestedBy: employeeId
+							});
 							currentPrompt = `[协作回复] ${targetName} 的回复：\n${collabReply}\n\n请基于以上协作意见继续完成任务。`;
 							continue;
 						}
@@ -471,10 +574,16 @@ async function runEmployeeAgent(employeeId, prompt, deps, onChunk, depth = 0) {
 				const toId = delegateMatch[1];
 				const message = delegateMatch[2].trim();
 				try {
-					const reply = await runEmployeeAgent(toId, message, deps, void 0, 1);
+					const reply = await runEmployeeAgent(toId, message, deps, void 0, 1, goalId);
 					if (reply) {
-						insertActivity(toId, "task_response", reply, { delegatedBy: employeeId });
-						insertActivity(employeeId, "task_response", `已委托 ${toId}：${message}`, { delegateTo: toId });
+						insertActivity(toId, "task_response", reply, {
+							delegatedBy: employeeId,
+							goalId
+						});
+						insertActivity(employeeId, "task_response", `已委托 ${toId}：${message}`, {
+							delegateTo: toId,
+							goalId
+						});
 					}
 				} catch {}
 				break;
@@ -489,10 +598,16 @@ async function runEmployeeAgent(employeeId, prompt, deps, onChunk, depth = 0) {
 				const targetEmployee = allEmps.find((e) => e.id === targetNameOrId) ?? allEmps.find((e) => e.name === targetNameOrId) ?? allEmps.find((e) => e.role === targetNameOrId);
 				if (targetEmployee) {
 					const targetId = targetEmployee.id;
-					insertActivity(targetId, "task_assigned", taskContent, { assignedBy: employeeId });
+					insertActivity(targetId, "task_assigned", taskContent, {
+						assignedBy: employeeId,
+						goalId
+					});
 					try {
-						const reply = await runEmployeeAgent(targetId, taskContent, deps, void 0, 1);
-						if (reply) insertActivity(targetId, "task_response", reply, { assignedBy: employeeId });
+						const reply = await runEmployeeAgent(targetId, taskContent, deps, void 0, 1, goalId);
+						if (reply) insertActivity(targetId, "task_response", reply, {
+							assignedBy: employeeId,
+							goalId
+						});
 					} catch {}
 				}
 				break;
@@ -504,15 +619,69 @@ async function runEmployeeAgent(employeeId, prompt, deps, onChunk, depth = 0) {
 				const options = decisionMatch[1].split("|").map((s) => s.trim()).filter(Boolean);
 				const background = decisionMatch[2].trim();
 				if (options.length >= 2) {
-					insertPendingDecision(employeeId, background, options[0], options[1], options);
-					insertActivity(employeeId, "pending_decision", `[待决] ${background}（${options.join(" | ")}）`);
+					insertPendingDecision(employeeId, background, options[0], options[1], options, goalId);
+					insertActivity(employeeId, "pending_decision", `[待决] ${background}（${options.join(" | ")}）`, { goalId });
 				}
 				break;
 			}
 		}
 		break;
 	}
+	if (lastText) {
+		const status = applyTaskStatusFromReply(employeeId, lastText, goalId);
+		if (goalId !== void 0 && status.doneCount > 0) dispatchReadyTasksForGoal(goalId, deps).catch(() => void 0);
+	}
 	return lastText;
+}
+async function dispatchReadyTasksForGoal(goalId, deps) {
+	const goal = getGoalById(goalId);
+	if (!goal) return;
+	const tasks = getGoalTasks(goalId);
+	if (tasks.length === 0) return;
+	const byUid = /* @__PURE__ */ new Map();
+	for (const t of tasks) if (t.task_uid) byUid.set(t.task_uid, t);
+	const ready = tasks.filter((t) => t.status === "pending" && t.dispatched_at == null).filter((t) => {
+		const depsUids = parseDependsOn(t);
+		if (depsUids.length === 0) return true;
+		return depsUids.every((uid) => byUid.get(uid)?.status === "done");
+	}).sort((a, b) => a.sequence - b.sequence || a.id - b.id);
+	for (const task of ready.slice(0, 1)) {
+		markGoalTaskDispatched(task.id);
+		insertActivity(task.employee_id, "task_assigned", `收到任务：${task.title}（目标：${goal.title}）`, {
+			goalId,
+			taskId: task.id,
+			taskUid: task.task_uid,
+			phase: "dispatched"
+		});
+		try {
+			const prompt = `CEO 下发了目标内任务，请直接产出首版可交付物。
+
+目标：${goal.title}${goal.description ? `\n目标描述：${goal.description}` : ""}
+任务：${task.title}
+${task.deliverable ? `可交付物：${task.deliverable}` : ""}
+${task.done_definition ? `完成标准：${task.done_definition}` : ""}
+
+要求：
+1. 直接给出可交付内容，不要只说“我会做”
+2. 若有阻塞，使用 [待决] 背景: ... | 选A: ... | 选B: ...
+3. 已启动请加 [任务进行中: ${task.title.slice(0, 12)}]
+4. 全部完成请加 [任务完成: ${task.title.slice(0, 12)}]`;
+			const reply = await runEmployeeAgent(task.employee_id, prompt, deps, void 0, 0, goalId);
+			if (reply) {
+				insertActivity(task.employee_id, "task_response", reply, {
+					goalId,
+					taskId: task.id,
+					taskUid: task.task_uid
+				});
+				try {
+					updateGoalTaskStatus(task.id, "in_progress");
+				} catch {}
+				scheduleFollowUp(task.employee_id, deps, 60 * 1e3, 1, goalId);
+			}
+		} catch {
+			updateGoalTask(task.id, { status: "pending" });
+		}
+	}
 }
 /**
 * Run a cron-triggered proactive report for an employee.
@@ -522,9 +691,24 @@ async function runEmployeeCron(employeeId, deps) {
 	const employee = getAnyEmployee(employeeId);
 	if (!employee) return;
 	const activeTasks = getEmployeeActiveTasks(employeeId);
-	let prompt = employee.cronPrompt;
-	if (activeTasks.length > 0) {
-		const taskLines = activeTasks.map((t) => `  - [${t.status === "in_progress" ? "进行中" : "待开始"}] ${t.title}（目标：${t.goal_title}）`).join("\n");
+	const grouped = /* @__PURE__ */ new Map();
+	for (const t of activeTasks) {
+		if (!grouped.has(t.goal_id)) grouped.set(t.goal_id, []);
+		grouped.get(t.goal_id).push(t);
+	}
+	if (grouped.size === 0) {
+		try {
+			const reply = await runEmployeeAgent(employeeId, employee.cronPrompt, deps);
+			if (reply) {
+				insertReport(employeeId, reply);
+				insertActivity(employeeId, "report", reply);
+			}
+		} catch {}
+		return;
+	}
+	for (const [goalId, tasks] of grouped) {
+		let prompt = employee.cronPrompt;
+		const taskLines = tasks.map((t) => `  - [${t.status === "in_progress" ? "进行中" : "待开始"}] ${t.title}`).join("\n");
 		prompt += `
 
 你当前有以下待完成任务，请在日报中说明每项任务的最新进展：
@@ -535,14 +719,14 @@ ${taskLines}
 - 如某项任务正在进行，在回复中加 [任务进行中: 任务标题关键词]
 - 如某项任务遇到阻塞需要 CEO 决策，加 [待决] 标记
 - 汇报以 [进展汇报] 开头`;
+		try {
+			const reply = await runEmployeeAgent(employeeId, prompt, deps, void 0, 0, goalId);
+			if (reply) {
+				insertReport(employeeId, reply, goalId);
+				insertActivity(employeeId, "report", reply, { goalId });
+			}
+		} catch {}
 	}
-	try {
-		const reply = await runEmployeeAgent(employeeId, prompt, deps);
-		if (reply) {
-			insertReport(employeeId, reply);
-			insertActivity(employeeId, "report", reply);
-		}
-	} catch {}
 }
 const MAX_FOLLOWUP_ITERATIONS = 6;
 /**
@@ -550,7 +734,7 @@ const MAX_FOLLOWUP_ITERATIONS = 6;
 * After each response, automatically reschedules if the employee is still working.
 * Stops when: task completed ([任务完成:]), CEO decision needed ([待决]), or max iterations reached.
 */
-function scheduleFollowUp(employeeId, deps, delayMs = 120 * 1e3, iteration = 1) {
+function scheduleFollowUp(employeeId, deps, delayMs = 120 * 1e3, iteration = 1, goalId) {
 	if (iteration > MAX_FOLLOWUP_ITERATIONS) return;
 	setTimeout(() => {
 		runEmployeeAgent(employeeId, `基于你当前的任务，产出下一个里程碑的可交付成果。
@@ -560,13 +744,13 @@ function scheduleFollowUp(employeeId, deps, delayMs = 120 * 1e3, iteration = 1) 
 - 如果上一步已产出初稿，现在细化或推进下一步
 - 遇到需要 CEO 拍板的节点：[待决] 背景: ... | 选A: ... | 选B: ...
 - 完成全部任务时加 [任务完成: 关键词]
-- 仍在推进时加 [任务进行中: 关键词]`, deps).then((reply) => {
+- 仍在推进时加 [任务进行中: 关键词]`, deps, void 0, 0, goalId).then((reply) => {
 			if (!reply) return;
-			insertReport(employeeId, reply);
-			insertActivity(employeeId, "task_response", reply);
+			insertReport(employeeId, reply, goalId);
+			insertActivity(employeeId, "task_response", reply, { goalId });
 			const isDone = reply.includes("[任务完成");
 			const isBlocked = reply.includes("[待决]");
-			if (!isDone && !isBlocked) scheduleFollowUp(employeeId, deps, 120 * 1e3, iteration + 1);
+			if (!isDone && !isBlocked) scheduleFollowUp(employeeId, deps, 120 * 1e3, iteration + 1, goalId);
 		}).catch(() => void 0);
 	}, delayMs);
 }
@@ -575,7 +759,8 @@ function scheduleFollowUp(employeeId, deps, delayMs = 120 * 1e3, iteration = 1) 
 * Runs a one-shot agent call (no persistent session needed).
 */
 async function decomposeGoal(goalId, title, description, deps) {
-	const employeeList = getAllEmployees().map((e) => `- ${e.role} (${e.name}, id=${e.id})`).join("\n");
+	const employees = getAllEmployees();
+	const employeeList = employees.map((e) => `- ${e.role} (${e.name}, id=${e.id})`).join("\n");
 	const decompositionPrompt = `你是公司的 AI 目标分解助手。
 CEO 设置了以下季度目标：
 标题：${title}
@@ -584,79 +769,82 @@ ${description ? `描述：${description}` : ""}
 员工列表：
 ${employeeList}
 
-请将这个目标分解为每个员工需要承担的具体任务。
+请将这个目标分解为“有依赖关系”的执行计划，要求：
+1. 每条任务必须可验证，不要泛泛描述
+2. 明确依赖：后续任务必须依赖前置任务（不要所有任务都并行）
+3. 默认串行推进：尽量只有第一个任务无依赖，其他任务依赖前序任务
+
 按以下 JSON 格式输出（只输出 JSON，不要其他文字）：
 {
   "tasks": [
-    { "employee_id": "company-pm", "title": "任务标题（一句话）" },
-    { "employee_id": "company-eng", "title": "任务标题" },
-    ...
+    {
+      "uid": "T1",
+      "employee_id": "company-pm",
+      "title": "任务标题（一句话）",
+      "depends_on": [],
+      "deliverable": "交付物描述（可检查）",
+      "done_definition": "完成定义（可验收）"
+    }
   ]
 }`;
-	const { insertGoalTask, updateGoalTaskStatus } = await import("./db-v3KNaPQv.js").then((n) => n.t);
+	if (getGoalTasks(goalId).length > 0) return;
 	const agentDir = join(homedir(), ".openclaw");
 	const workspaceDir = join(agentDir, "agents", "company-decomposer", `goal-${goalId}`);
+	const knownEmployeeIds = new Set(employees.map((e) => e.id));
+	const match = ([...(await deps.runEmbeddedPiAgent({
+		sessionId: `decompose-${randomUUID()}`,
+		sessionKey: `agent:company-decomposer:goal-${goalId}`,
+		agentId: "company-decomposer",
+		sessionFile: join(workspaceDir, "sessions.json"),
+		workspaceDir,
+		agentDir,
+		config: deps.config,
+		prompt: decompositionPrompt,
+		trigger: "user",
+		senderIsOwner: true,
+		disableMessageTool: true,
+		disableTools: true,
+		runId: randomUUID(),
+		timeoutMs: 12e4,
+		...resolveAgentModel(deps.config)
+	}))?.payloads ?? []].reverse().find((p) => p.text?.trim())?.text ?? "").match(/\{[\s\S]*\}/);
+	if (!match) throw new Error(`目标拆解输出非 JSON（goalId=${goalId}）`);
+	let parsed;
 	try {
-		const match = ([...(await deps.runEmbeddedPiAgent({
-			sessionId: `decompose-${randomUUID()}`,
-			sessionKey: `agent:company-decomposer:goal-${goalId}`,
-			agentId: "company-decomposer",
-			sessionFile: join(workspaceDir, "sessions.json"),
-			workspaceDir,
-			agentDir,
-			config: deps.config,
-			prompt: decompositionPrompt,
-			trigger: "user",
-			senderIsOwner: true,
-			disableMessageTool: true,
-			disableTools: true,
-			runId: randomUUID(),
-			timeoutMs: 12e4,
-			...resolveAgentModel(deps.config)
-		}))?.payloads ?? []].reverse().find((p) => p.text?.trim())?.text ?? "").match(/\{[\s\S]*\}/);
-		if (!match) return;
-		const parsed = JSON.parse(match[0]);
-		const insertedTasks = [];
-		for (const task of parsed.tasks ?? []) if (task.employee_id && task.title) {
-			const inserted = insertGoalTask(goalId, task.employee_id, task.title);
-			insertedTasks.push({
-				...task,
-				id: inserted.id
-			});
-			insertActivity(task.employee_id, "task_assigned", `收到任务：${task.title}（目标：${title}）`, {
-				goalId,
-				taskTitle: task.title
-			});
-		}
-		if (insertedTasks.length > 0) (async () => {
-			for (const task of insertedTasks) {
-				await new Promise((r) => setTimeout(r, 2e3));
-				try {
-					const prompt = `CEO 刚刚设置了新的季度目标，你被分配了一项任务。请立即开始执行并输出第一份可交付成果。
-
-目标：${title}${description ? `\n目标描述：${description}` : ""}
-你的任务：${task.title}
-
-要求：
-1. 不要只写"我会做"——直接输出你作为${task.employee_id.replace("company-", "")}能立刻产出的内容（草稿、方案、分析、列表等）
-2. 哪怕信息不完整，也先给出最佳假设下的初稿，让CEO看到实质内容
-3. 如果某个关键方向必须CEO拍板才能继续，在末尾加 [待决] 背景: ... | 选A: ... | 选B: ...
-4. 如果已开始执行，加 [任务进行中: ${task.title.substring(0, 10)}]`;
-					const reply = await runEmployeeAgent(task.employee_id, prompt, deps);
-					if (reply) {
-						insertActivity(task.employee_id, "task_response", reply, {
-							goalId,
-							taskTitle: task.title
-						});
-						try {
-							updateGoalTaskStatus(task.id, "in_progress");
-						} catch {}
-						scheduleFollowUp(task.employee_id, deps, 60 * 1e3);
-					}
-				} catch {}
-			}
-		})();
-	} catch {}
+		parsed = JSON.parse(match[0]);
+	} catch {
+		throw new Error(`目标拆解 JSON 解析失败（goalId=${goalId}）`);
+	}
+	const unknownEmployeeIds = (parsed.tasks ?? []).map((task) => task.employee_id).filter(Boolean).filter((id) => !knownEmployeeIds.has(id));
+	if (unknownEmployeeIds.length > 0) throw new Error(`目标拆解包含未知员工ID: ${[...new Set(unknownEmployeeIds)].join(", ")}`);
+	const uidList = (parsed.tasks ?? []).map((task) => task.uid).filter(Boolean);
+	const duplicatedUids = uidList.filter((uid, idx) => uidList.indexOf(uid) !== idx);
+	if (duplicatedUids.length > 0) throw new Error(`目标拆解任务 UID 重复: ${[...new Set(duplicatedUids)].join(", ")}`);
+	const knownUidSet = new Set(uidList);
+	const badDeps = [];
+	for (const task of parsed.tasks ?? []) for (const dep of task.depends_on ?? []) {
+		if (!knownUidSet.has(dep)) badDeps.push(`${task.uid}->${dep}`);
+		if (dep === task.uid) badDeps.push(`${task.uid}->${dep}(self)`);
+	}
+	if (badDeps.length > 0) throw new Error(`目标拆解依赖非法: ${[...new Set(badDeps)].join(", ")}`);
+	const plannedTasks = (parsed.tasks ?? []).filter((task) => Boolean(task.uid && task.employee_id && task.title)).filter((task) => knownEmployeeIds.has(task.employee_id)).map((task, idx) => ({
+		uid: task.uid.trim(),
+		employee_id: task.employee_id,
+		title: task.title.trim(),
+		depends_on: (task.depends_on ?? []).filter(Boolean),
+		deliverable: (task.deliverable ?? "").trim() || "提交可评审的一页执行产出",
+		done_definition: (task.done_definition ?? "").trim() || "有明确可验收结果并可继续下游任务",
+		sequence: idx
+	}));
+	if (plannedTasks.length === 0) throw new Error(`目标拆解返回空任务列表（goalId=${goalId}）`);
+	for (const task of plannedTasks) insertGoalTaskWithMeta(goalId, task.employee_id, task.title, {
+		taskUid: task.uid,
+		dependsOnTaskUids: task.depends_on,
+		deliverable: task.deliverable,
+		doneDefinition: task.done_definition,
+		sequence: task.sequence
+	});
+	await dispatchReadyTasksForGoal(goalId, deps);
 }
 /**
 * Use an AI HR agent to generate a new employee profile from a plain-text description.
@@ -714,6 +902,7 @@ ${employeeList}
 //#endregion
 //#region index.ts
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const CHIEF_ID = "company-coo";
 function getEmployeeIds() {
 	return new Set(getAllEmployees().map((e) => e.id));
 }
@@ -756,14 +945,12 @@ var openclaw_company_os_default = definePluginEntry({
 					return handleApiRequest({
 						req,
 						res,
-						runAgent: (employeeId, prompt) => runEmployeeAgent(employeeId, prompt, agentDeps),
-						runAgentStream: (employeeId, prompt, onChunk) => runEmployeeAgent(employeeId, prompt, agentDeps, onChunk).then(() => void 0),
-						decomposGoal: async (title, description) => {
-							const goal = getActiveGoals().find((g) => g.title === title);
-							if (!goal) return;
-							decomposeGoal(goal.id, title, description, agentDeps).catch(() => void 0);
+						runAgent: (employeeId, prompt, goalId) => runEmployeeAgent(employeeId, prompt, agentDeps, void 0, 0, goalId),
+						runAgentStream: (employeeId, prompt, onChunk, goalId) => runEmployeeAgent(employeeId, prompt, agentDeps, onChunk, 0, goalId).then(() => void 0),
+						decomposGoal: async (goalId, title, description) => {
+							await decomposeGoal(goalId, title, description, agentDeps);
 						},
-						scheduleFollowUp: (employeeId, delayMs) => scheduleFollowUp(employeeId, agentDeps, delayMs),
+						scheduleFollowUp: (employeeId, delayMs, goalId) => scheduleFollowUp(employeeId, agentDeps, delayMs, 1, goalId),
 						generateEmployee: (description) => generateEmployeeFromDescription(description, agentDeps)
 					});
 				}
@@ -799,11 +986,25 @@ var openclaw_company_os_default = definePluginEntry({
 			if (!agentId || !getEmployeeIds().has(agentId)) return;
 			const employee = getAnyEmployee(agentId);
 			if (!employee) return;
-			const goals = getActiveGoals();
-			const recentDecisions = getDecisions(5);
+			const sessionKey = ctx?.sessionKey ?? "";
+			const scopedGoalId = (() => {
+				const m = sessionKey.match(/:goal:(\d+)/);
+				if (!m) return void 0;
+				const n = Number(m[1]);
+				return Number.isFinite(n) && n > 0 ? n : void 0;
+			})();
+			const goals = scopedGoalId !== void 0 ? (() => {
+				const g = getGoalById(scopedGoalId);
+				return g ? [g] : [];
+			})() : getActiveGoals();
+			const recentDecisions = scopedGoalId !== void 0 ? getDecisionsFiltered({
+				goalId: scopedGoalId,
+				limit: 5,
+				offset: 0
+			}) : getDecisions(5);
 			const goalsSummary = goals.length > 0 ? goals.map((g) => `- ${g.title}${g.quarter ? ` (${g.quarter})` : ""}`).join("\n") : "（CEO 尚未设置季度目标）";
 			const decisionsSummary = recentDecisions.length > 0 ? recentDecisions.map((d) => `- [${d.employee_id}] ${d.summary}：${d.choice}`).join("\n") : "（暂无历史决策）";
-			const pendingByMe = getPendingDecisions().filter((p) => p.employee_id === agentId).length;
+			const pendingByMe = getPendingDecisions(scopedGoalId).filter((p) => p.employee_id === agentId).length;
 			const colleagues = getAllEmployees().filter((e) => e.id !== agentId).map((e) => `- ${e.id}：${e.name}（${e.role}）`).join("\n");
 			return { appendSystemContext: `
 ## 你的角色
@@ -811,6 +1012,8 @@ ${employee.systemPrompt}
 
 ## 公司当前目标
 ${goalsSummary}
+
+${scopedGoalId !== void 0 ? `## 当前会话范围\n你当前在目标隔离模式中，只处理 goalId=${scopedGoalId} 的任务。` : ""}
 
 ## CEO 近期决策（供参考）
 ${decisionsSummary}
@@ -836,6 +1039,13 @@ ${colleagues}
 		api.on("llm_output", async (event, ctx) => {
 			const agentId = ctx?.agentId;
 			if (!agentId || !getEmployeeIds().has(agentId)) return;
+			const sessionKey = ctx?.sessionKey ?? "";
+			const scopedGoalId = (() => {
+				const m = sessionKey.match(/:goal:(\d+)/);
+				if (!m) return void 0;
+				const n = Number(m[1]);
+				return Number.isFinite(n) && n > 0 ? n : void 0;
+			})();
 			const combined = (event.assistantTexts ?? []).join("\n");
 			if (!combined.includes("[待决]")) return;
 			const match = combined.match(/\[待决\]\s*背景:\s*([^|]+)\|?\s*选A:\s*([^|]+)(?:\|?\s*选B:\s*(.+))?/);
@@ -843,9 +1053,9 @@ ${colleagues}
 			const [, background, optionA, optionB] = match;
 			if (!background?.trim() || !optionA?.trim()) return;
 			try {
-				insertPendingDecision(agentId, background.trim(), optionA.trim(), optionB?.trim());
+				insertPendingDecision(agentId, background.trim(), optionA.trim(), optionB?.trim(), void 0, scopedGoalId);
 				const label = optionB?.trim() ? `选A: ${optionA.trim()} | 选B: ${optionB.trim()}` : optionA.trim();
-				insertActivity(agentId, "pending_decision", `[待决] ${background.trim()}（${label}）`);
+				insertActivity(agentId, "pending_decision", `[待决] ${background.trim()}（${label}）`, { goalId: scopedGoalId });
 			} catch {}
 			for (const [tag, status] of [["任务完成", "done"], ["任务进行中", "in_progress"]]) {
 				const tagRe = new RegExp(`\\[${tag}[：:](.*?)\\]`, "g");
@@ -854,7 +1064,7 @@ ${colleagues}
 					const keyword = m[1].trim();
 					if (!keyword) continue;
 					try {
-						const task = findGoalTaskByTitle(agentId, keyword);
+						const task = findGoalTaskByTitle(agentId, keyword, scopedGoalId);
 						if (task) updateGoalTaskStatus(task.id, status);
 					} catch {}
 				}
@@ -867,9 +1077,10 @@ ${colleagues}
 				config: api.config
 			};
 			const lastFired = {};
+			const coordinatorOnly = getAllEmployees().filter((e) => e.id === CHIEF_ID);
 			setInterval(() => {
 				const now = /* @__PURE__ */ new Date();
-				for (const emp of getAllEmployees()) {
+				for (const emp of coordinatorOnly) {
 					if (!matchesCronNow(emp.cronSchedule, now)) continue;
 					const key = `${emp.id}:${now.getFullYear()}-${now.getMonth()}-${now.getDate()}-${now.getHours()}-${now.getMinutes()}`;
 					if (lastFired[emp.id] === key) continue;
@@ -878,7 +1089,7 @@ ${colleagues}
 					runEmployeeCron(emp.id, agentDeps).catch(() => void 0);
 				}
 			}, 6e4);
-			getAllEmployees().forEach((emp, i) => {
+			coordinatorOnly.forEach((emp, i) => {
 				setTimeout(() => {
 					const recent = getEmployeeReports(emp.id, 1);
 					if (recent.length > 0) {

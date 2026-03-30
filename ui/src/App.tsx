@@ -2,8 +2,8 @@ import { Route, Routes } from "react-router-dom";
 import { Sidebar } from "./components/Sidebar.js";
 import { Hall } from "./pages/Hall.js";
 import { Chat } from "./pages/Chat.js";
-import { Meeting } from "./pages/Meeting.js";
 import { Decisions } from "./pages/Decisions.js";
+import { GoalWorkspace } from "./pages/GoalWorkspace.js";
 import { useHall } from "./hooks/useApi.js";
 
 export function App() {
@@ -86,14 +86,14 @@ export function App() {
             element={<Hall data={data} onRefresh={refresh} />}
           />
           <Route
-            path="/chat/:employeeId"
-            element={<Chat employees={data.employees} />}
+            path="/workspace"
+            element={<GoalWorkspace data={data} onRefresh={refresh} />}
           />
           <Route
-            path="/meeting"
-            element={<Meeting employees={data.employees} />}
+            path="/chat/:employeeId"
+            element={<Chat employees={data.employees} goals={data.goals} />}
           />
-          <Route path="/decisions" element={<Decisions employees={data.employees} />} />
+          <Route path="/decisions" element={<Decisions employees={data.employees} goals={data.goals} />} />
         </Routes>
       </div>
     </div>
