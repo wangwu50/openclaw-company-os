@@ -1,10 +1,16 @@
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 import { readFileSync, existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { definePluginEntry } from "openclaw/plugin-sdk/core";
+import {
+  decomposeGoal,
+  dispatchReadyTasksForGoal,
+  generateEmployeeFromDescription,
+  runEmployeeAgent,
+  runEmployeeCron,
+  scheduleFollowUp,
+} from "./src/agent-runner.js";
 import { handleApiRequest } from "./src/api.js";
-import { decomposeGoal, generateEmployeeFromDescription, runEmployeeAgent, runEmployeeCron, scheduleFollowUp } from "./src/agent-runner.js";
-import { getAllEmployees, getAnyEmployee } from "./src/employees.js";
 import {
   getActiveGoals,
   getDecisions,
@@ -15,8 +21,10 @@ import {
   getEmployeeReports,
   getGoalById,
   findGoalTaskByTitle,
+  resetPendingDispatches,
   updateGoalTaskStatus,
 } from "./src/db.js";
+import { getAllEmployees, getAnyEmployee } from "./src/employees.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -36,8 +44,9 @@ export default definePluginEntry({
     // ── 1. HTTP routes — SPA + REST API ──────────────────────────────────────
 
     // Read the gateway token for plugin-level auth check
-    const gatewayToken: string | undefined =
-      (api.config as unknown as { gateway?: { auth?: { token?: string } } })?.gateway?.auth?.token;
+    const gatewayToken: string | undefined = (
+      api.config as unknown as { gateway?: { auth?: { token?: string } } }
+    )?.gateway?.auth?.token;
 
     api.registerHttpRoute({
       path: "/company",
@@ -74,11 +83,11 @@ export default definePluginEntry({
             res.writeHead(401, { "Content-Type": "text/html; charset=utf-8" });
             res.end(
               `<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><title>认证失败</title></head>` +
-              `<body style="font-family:system-ui;padding:40px;background:#1a1a2e;color:#e8e8f0">` +
-              `<h2>🔐 需要认证</h2>` +
-              `<p>请在 URL 后添加 <code>?token=YOUR_TOKEN</code> 访问。</p>` +
-              `<p>例：<code>http://localhost:18789/company?token=${gatewayToken}</code></p>` +
-              `</body></html>`,
+                `<body style="font-family:system-ui;padding:40px;background:#1a1a2e;color:#e8e8f0">` +
+                `<h2>🔐 需要认证</h2>` +
+                `<p>请在 URL 后添加 <code>?token=YOUR_TOKEN</code> 访问。</p>` +
+                `<p>例：<code>http://localhost:18789/company?token=${gatewayToken}</code></p>` +
+                `</body></html>`,
             );
             return;
           }
@@ -99,12 +108,16 @@ export default definePluginEntry({
             runAgent: (employeeId, prompt, goalId) =>
               runEmployeeAgent(employeeId, prompt, agentDeps, undefined, 0, goalId),
             runAgentStream: (employeeId, prompt, onChunk, goalId) =>
-              runEmployeeAgent(employeeId, prompt, agentDeps, onChunk, 0, goalId).then(() => void 0),
+              runEmployeeAgent(employeeId, prompt, agentDeps, onChunk, 0, goalId).then(
+                () => void 0,
+              ),
             decomposGoal: async (goalId, title, description) => {
               await decomposeGoal(goalId, title, description, agentDeps);
             },
-            scheduleFollowUp: (employeeId, delayMs, goalId) => scheduleFollowUp(employeeId, agentDeps, delayMs, 1, goalId),
-            generateEmployee: (description) => generateEmployeeFromDescription(description, agentDeps),
+            scheduleFollowUp: (employeeId, delayMs, goalId) =>
+              scheduleFollowUp(employeeId, agentDeps, delayMs, 1, goalId),
+            generateEmployee: (description) =>
+              generateEmployeeFromDescription(description, agentDeps),
           });
         }
 
@@ -161,15 +174,17 @@ export default definePluginEntry({
         return Number.isFinite(n) && n > 0 ? n : undefined;
       })();
 
-      const goals = scopedGoalId !== undefined
-        ? (() => {
-            const g = getGoalById(scopedGoalId);
-            return g ? [g] : [];
-          })()
-        : getActiveGoals();
-      const recentDecisions = scopedGoalId !== undefined
-        ? getDecisionsFiltered({ goalId: scopedGoalId, limit: 5, offset: 0 })
-        : getDecisions(5);
+      const goals =
+        scopedGoalId !== undefined
+          ? (() => {
+              const g = getGoalById(scopedGoalId);
+              return g ? [g] : [];
+            })()
+          : getActiveGoals();
+      const recentDecisions =
+        scopedGoalId !== undefined
+          ? getDecisionsFiltered({ goalId: scopedGoalId, limit: 5, offset: 0 })
+          : getDecisions(5);
 
       const goalsSummary =
         goals.length > 0
@@ -178,9 +193,7 @@ export default definePluginEntry({
 
       const decisionsSummary =
         recentDecisions.length > 0
-          ? recentDecisions
-              .map((d) => `- [${d.employee_id}] ${d.summary}：${d.choice}`)
-              .join("\n")
+          ? recentDecisions.map((d) => `- [${d.employee_id}] ${d.summary}：${d.choice}`).join("\n")
           : "（暂无历史决策）";
 
       const pendingByMe = getPendingDecisions(scopedGoalId).filter(
@@ -229,7 +242,8 @@ ${colleagues}
 
     api.on("llm_output", async (event, ctx) => {
       const agentId = ctx?.agentId;
-      if (!agentId || !getEmployeeIds().has(agentId)) return;
+      // Only COO may escalate decisions to CEO
+      if (!agentId || !getEmployeeIds().has(agentId) || agentId !== "company-coo") return;
       const sessionKey = (ctx as unknown as { sessionKey?: string })?.sessionKey ?? "";
       const scopedGoalId = (() => {
         const m = sessionKey.match(/:goal:(\d+)/);
@@ -260,14 +274,21 @@ ${colleagues}
           undefined,
           scopedGoalId,
         );
-        const label = optionB?.trim() ? `选A: ${optionA.trim()} | 选B: ${optionB.trim()}` : optionA.trim();
-        insertActivity(agentId, "pending_decision", `[待决] ${background.trim()}（${label}）`, { goalId: scopedGoalId });
+        const label = optionB?.trim()
+          ? `选A: ${optionA.trim()} | 选B: ${optionB.trim()}`
+          : optionA.trim();
+        insertActivity(agentId, "pending_decision", `[待决] ${background.trim()}（${label}）`, {
+          goalId: scopedGoalId,
+        });
       } catch {
         // non-fatal
       }
 
       // Parse task status updates: [任务完成: keyword] and [任务进行中: keyword]
-      for (const [tag, status] of [["任务完成", "done"], ["任务进行中", "in_progress"]] as const) {
+      for (const [tag, status] of [
+        ["任务完成", "done"],
+        ["任务进行中", "in_progress"],
+      ] as const) {
         const tagRe = new RegExp(`\\[${tag}[：:](.*?)\\]`, "g");
         let m: RegExpExecArray | null;
         while ((m = tagRe.exec(combined)) !== null) {
@@ -288,7 +309,9 @@ ${colleagues}
     api.on("gateway_start", async (_event) => {
       api.logger?.info("[company] 一人公司 OS initialized");
 
-      type RunFn2 = (params: Record<string, unknown>) => Promise<{ payloads?: Array<{ text?: string }> }>;
+      type RunFn2 = (
+        params: Record<string, unknown>,
+      ) => Promise<{ payloads?: Array<{ text?: string }> }>;
       const runFn2 = api.runtime.agent.runEmbeddedPiAgent as unknown as RunFn2;
       const agentDeps = { runEmbeddedPiAgent: runFn2, config: api.config };
 
@@ -315,18 +338,37 @@ ${colleagues}
       // Only fires if the employee hasn't reported in the last 6 hours.
       // Stagger by 45s per employee to avoid lane saturation.
       coordinatorOnly.forEach((emp, i) => {
-        setTimeout(() => {
-          const recent = getEmployeeReports(emp.id, 1);
-          if (recent.length > 0) {
-            const lastMs = Date.now() - new Date(recent[0].created_at.includes("T") ? recent[0].created_at : recent[0].created_at.replace(" ", "T") + "Z").getTime();
-            if (lastMs < 6 * 60 * 60 * 1000) return; // reported within 6h, skip
-          }
-          api.logger?.info(`[company] startup cron fire: ${emp.id}`);
-          void runEmployeeCron(emp.id, agentDeps).catch(() => void 0);
-        }, (i + 1) * 45_000); // 45s, 90s, 135s, 180s, 225s
+        setTimeout(
+          () => {
+            const recent = getEmployeeReports(emp.id, 1);
+            if (recent.length > 0) {
+              const lastMs =
+                Date.now() -
+                new Date(
+                  recent[0].created_at.includes("T")
+                    ? recent[0].created_at
+                    : recent[0].created_at.replace(" ", "T") + "Z",
+                ).getTime();
+              if (lastMs < 6 * 60 * 60 * 1000) return; // reported within 6h, skip
+            }
+            api.logger?.info(`[company] startup cron fire: ${emp.id}`);
+            void runEmployeeCron(emp.id, agentDeps).catch(() => void 0);
+          },
+          (i + 1) * 45_000,
+        ); // 45s, 90s, 135s, 180s, 225s
       });
-    });
 
+      // Startup dispatch recovery: re-trigger dispatch for active goals with pending/un-dispatched tasks.
+      // Resets dispatched_at on non-done tasks so they re-enter the queue (handles mid-execution restarts).
+      setTimeout(() => {
+        const activeGoals = getActiveGoals();
+        for (const goal of activeGoals) {
+          api.logger?.info(`[company] startup dispatch recovery: goal #${goal.id}`);
+          resetPendingDispatches(goal.id); // un-dispatch non-done tasks (gateway may have been killed mid-run)
+          void dispatchReadyTasksForGoal(goal.id, agentDeps).catch(() => void 0);
+        }
+      }, 15_000); // 15s after boot — after cron fires are scheduled
+    });
   },
 });
 
@@ -356,7 +398,9 @@ function matchesCronNow(expr: string, now: Date): boolean {
     return Number(field) === value;
   };
 
-  return matchField(minPart, nowMin) && matchField(hourPart, nowHour) && matchField(dowPart, nowDow);
+  return (
+    matchField(minPart, nowMin) && matchField(hourPart, nowHour) && matchField(dowPart, nowDow)
+  );
 }
 
 const DEV_PLACEHOLDER_HTML = `<!DOCTYPE html>

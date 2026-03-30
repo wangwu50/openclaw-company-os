@@ -58,7 +58,9 @@ export function useDecisions() {
       if (status) params.set("status", status);
       if (goal) params.set("goalId", goal);
       const qs = params.toString();
-      const res = await fetchJson<{ decisions: Decision[] }>(`${BASE}/decisions${qs ? `?${qs}` : ""}`);
+      const res = await fetchJson<{ decisions: Decision[] }>(
+        `${BASE}/decisions${qs ? `?${qs}` : ""}`,
+      );
       setDecisions(res.decisions);
       setError(null);
     } catch (e) {
@@ -72,7 +74,19 @@ export function useDecisions() {
     void search(query, employeeFilter, statusFilter, goalFilter);
   }, [query, employeeFilter, statusFilter, goalFilter, search]);
 
-  return { decisions, loading, error, query, setQuery, employeeFilter, setEmployeeFilter, statusFilter, setStatusFilter, goalFilter, setGoalFilter };
+  return {
+    decisions,
+    loading,
+    error,
+    query,
+    setQuery,
+    employeeFilter,
+    setEmployeeFilter,
+    statusFilter,
+    setStatusFilter,
+    goalFilter,
+    setGoalFilter,
+  };
 }
 
 export function useDecisionStats(goalId?: number) {
@@ -108,14 +122,11 @@ export async function chatWithEmployee(
   message: string,
   goalId?: number,
 ): Promise<string> {
-  const res = await fetchJson<{ reply: string }>(
-    `${BASE}/chat/${employeeId}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, goalId }),
-    },
-  );
+  const res = await fetchJson<{ reply: string }>(`${BASE}/chat/${employeeId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, goalId }),
+  });
   return res.reply;
 }
 
@@ -165,13 +176,22 @@ export async function streamChatWithEmployee(
       }
       if (!dataLine) continue;
       if (currentEvent === "error") {
-        try { throw new Error(JSON.parse(dataLine) as string); } catch { throw new Error(dataLine); }
+        try {
+          throw new Error(JSON.parse(dataLine) as string);
+        } catch {
+          throw new Error(dataLine);
+        }
       }
       if (currentEvent === "chunk") {
         try {
           const text = JSON.parse(dataLine) as string;
-          if (text) { full += text; onChunk(text); }
-        } catch { /* skip */ }
+          if (text) {
+            full += text;
+            onChunk(text);
+          }
+        } catch {
+          /* skip */
+        }
       }
     }
   }
@@ -212,7 +232,12 @@ export async function reDecomposeGoal(id: number): Promise<void> {
 
 export async function updateTask(
   id: number,
-  fields: { status?: "pending" | "in_progress" | "done"; deadline?: string | null; priority?: string; extraGoalIds?: number[] | null },
+  fields: {
+    status?: "pending" | "in_progress" | "done";
+    deadline?: string | null;
+    priority?: string;
+    extraGoalIds?: number[] | null;
+  },
 ): Promise<void> {
   await fetchJson(`${BASE}/tasks/${id}`, {
     method: "PATCH",
@@ -221,12 +246,17 @@ export async function updateTask(
   });
 }
 
-export async function generateEmployee(description: string): Promise<import("../types.js").Employee> {
-  const res = await fetchJson<{ employee: import("../types.js").Employee }>(`${BASE}/employees/generate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ description }),
-  });
+export async function generateEmployee(
+  description: string,
+): Promise<import("../types.js").Employee> {
+  const res = await fetchJson<{ employee: import("../types.js").Employee }>(
+    `${BASE}/employees/generate`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ description }),
+    },
+  );
   return res.employee;
 }
 
@@ -242,10 +272,25 @@ export async function deleteEmployee(id: string): Promise<void> {
   await fetchJson(`${BASE}/employees/${id}`, { method: "DELETE" });
 }
 
+export async function clearChatSession(employeeId: string): Promise<void> {
+  await fetchJson(`${BASE}/chat/${employeeId}/session`, { method: "DELETE" });
+}
+
+export async function clearAllSessions(goalId?: number): Promise<void> {
+  const qs = goalId !== undefined ? `?goalId=${goalId}` : "";
+  await fetchJson(`${BASE}/sessions${qs}`, { method: "DELETE" });
+}
+
+export async function resetAll(): Promise<void> {
+  await fetchJson(`${BASE}/reset`, { method: "DELETE" });
+}
+
 export async function fetchReports(days: number, goalId?: number): Promise<EmployeeReport[]> {
   const params = new URLSearchParams({ days: String(days) });
   if (goalId !== undefined) params.set("goalId", String(goalId));
-  const res = await fetchJson<{ reports: EmployeeReport[] }>(`${BASE}/reports?${params.toString()}`);
+  const res = await fetchJson<{ reports: EmployeeReport[] }>(
+    `${BASE}/reports?${params.toString()}`,
+  );
   return res.reports;
 }
 
@@ -256,7 +301,9 @@ export function useActivity(refreshMs = 5_000, goalId?: number) {
     try {
       const qs = new URLSearchParams({ limit: "60" });
       if (goalId !== undefined) qs.set("goalId", String(goalId));
-      const res = await fetchJson<{ activity: ActivityEvent[] }>(`${BASE}/activity?${qs.toString()}`);
+      const res = await fetchJson<{ activity: ActivityEvent[] }>(
+        `${BASE}/activity?${qs.toString()}`,
+      );
       setActivity(res.activity);
     } catch {
       // silent

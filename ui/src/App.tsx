@@ -1,10 +1,10 @@
 import { Route, Routes } from "react-router-dom";
 import { Sidebar } from "./components/Sidebar.js";
-import { Hall } from "./pages/Hall.js";
+import { useHall } from "./hooks/useApi.js";
 import { Chat } from "./pages/Chat.js";
 import { Decisions } from "./pages/Decisions.js";
 import { GoalWorkspace } from "./pages/GoalWorkspace.js";
-import { useHall } from "./hooks/useApi.js";
+import { Hall } from "./pages/Hall.js";
 
 export function App() {
   const { data, loading, error, refresh } = useHall();
@@ -81,19 +81,16 @@ export function App() {
         }}
       >
         <Routes>
-          <Route
-            path="/"
-            element={<Hall data={data} onRefresh={refresh} />}
-          />
-          <Route
-            path="/workspace"
-            element={<GoalWorkspace data={data} onRefresh={refresh} />}
-          />
+          <Route path="/" element={<Hall data={data} onRefresh={refresh} />} />
+          <Route path="/workspace" element={<GoalWorkspace data={data} onRefresh={refresh} />} />
           <Route
             path="/chat/:employeeId"
             element={<Chat employees={data.employees} goals={data.goals} />}
           />
-          <Route path="/decisions" element={<Decisions employees={data.employees} goals={data.goals} />} />
+          <Route
+            path="/decisions"
+            element={<Decisions employees={data.employees} goals={data.goals} />}
+          />
         </Routes>
       </div>
     </div>

@@ -1,7 +1,7 @@
-import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 export type Goal = {
   id: number;
@@ -64,7 +64,12 @@ export type EmployeeReport = {
 export type ActivityEvent = {
   id: number;
   employee_id: string;
-  event_type: "task_assigned" | "task_response" | "report" | "pending_decision" | "decision_received";
+  event_type:
+    | "task_assigned"
+    | "task_response"
+    | "report"
+    | "pending_decision"
+    | "decision_received";
   content: string;
   meta: string | null; // JSON string for extra data
   created_at: string;
@@ -215,14 +220,17 @@ export function getGoalById(id: number): Goal | undefined {
 export function insertGoal(title: string, description: string, quarter: string): Goal {
   const db = getDb();
   const result = db
-    .prepare(
-      "INSERT INTO goals (title, description, quarter) VALUES (?, ?, ?) RETURNING *",
-    )
+    .prepare("INSERT INTO goals (title, description, quarter) VALUES (?, ?, ?) RETURNING *")
     .get(title, description, quarter) as Goal;
   return result;
 }
 
-export function updateGoal(id: number, title: string, description: string, quarter: string): Goal | undefined {
+export function updateGoal(
+  id: number,
+  title: string,
+  description: string,
+  quarter: string,
+): Goal | undefined {
   return getDb()
     .prepare(
       "UPDATE goals SET title = ?, description = ?, quarter = ?, updated_at = datetime('now') WHERE id = ? RETURNING *",
@@ -272,7 +280,10 @@ export function getGoalTasks(goalId: number): GoalTask[] {
     .all(goalId) as GoalTask[];
 }
 
-export function getEmployeeActiveTasks(employeeId: string, goalId?: number): Array<GoalTask & { goal_title: string }> {
+export function getEmployeeActiveTasks(
+  employeeId: string,
+  goalId?: number,
+): Array<GoalTask & { goal_title: string }> {
   if (goalId !== undefined) {
     return getDb()
       .prepare(
@@ -303,19 +314,56 @@ export function updateGoalTaskStatus(id: number, status: GoalTask["status"]): vo
 
 export function markGoalTaskDispatched(id: number): void {
   getDb()
-    .prepare("UPDATE goal_tasks SET dispatched_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND dispatched_at IS NULL")
+    .prepare(
+      "UPDATE goal_tasks SET dispatched_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND dispatched_at IS NULL",
+    )
     .run(id);
+}
+
+/** Returns tasks that were dispatched but not yet done — used to auto-complete on employee reply. */
+export function getDispatchedActiveTasks(employeeId: string, goalId: number): GoalTask[] {
+  return getDb()
+    .prepare(
+      "SELECT * FROM goal_tasks WHERE employee_id = ? AND goal_id = ? AND dispatched_at IS NOT NULL AND status != 'done'",
+    )
+    .all(employeeId, goalId) as GoalTask[];
+}
+
+/**
+ * On gateway restart, un-dispatch non-done tasks so they can be re-dispatched.
+ * Handles the case where the previous gateway was killed mid-execution.
+ */
+export function resetPendingDispatches(goalId: number): void {
+  getDb()
+    .prepare(
+      "UPDATE goal_tasks SET dispatched_at = NULL, status = 'pending' WHERE goal_id = ? AND status != 'done'",
+    )
+    .run(goalId);
 }
 
 export function updateGoalTask(
   id: number,
-  fields: { status?: GoalTask["status"]; deadline?: string | null; priority?: GoalTask["priority"]; extraGoalIds?: number[] | null },
+  fields: {
+    status?: GoalTask["status"];
+    deadline?: string | null;
+    priority?: GoalTask["priority"];
+    extraGoalIds?: number[] | null;
+  },
 ): void {
   const sets: string[] = [];
-  const params: unknown[] = [];
-  if (fields.status !== undefined) { sets.push("status = ?"); params.push(fields.status); }
-  if (fields.deadline !== undefined) { sets.push("deadline = ?"); params.push(fields.deadline); }
-  if (fields.priority !== undefined) { sets.push("priority = ?"); params.push(fields.priority); }
+  const params: Array<string | number | bigint | Buffer | null> = [];
+  if (fields.status !== undefined) {
+    sets.push("status = ?");
+    params.push(fields.status);
+  }
+  if (fields.deadline !== undefined) {
+    sets.push("deadline = ?");
+    params.push(fields.deadline);
+  }
+  if (fields.priority !== undefined) {
+    sets.push("priority = ?");
+    params.push(fields.priority);
+  }
   if (fields.extraGoalIds !== undefined) {
     sets.push("extra_goal_ids = ?");
     params.push(fields.extraGoalIds === null ? null : JSON.stringify(fields.extraGoalIds));
@@ -328,7 +376,11 @@ export function updateGoalTask(
     .run(...params);
 }
 
-export function findGoalTaskByTitle(employeeId: string, titleFragment: string, goalId?: number): GoalTask | undefined {
+export function findGoalTaskByTitle(
+  employeeId: string,
+  titleFragment: string,
+  goalId?: number,
+): GoalTask | undefined {
   if (goalId !== undefined) {
     return getDb()
       .prepare(
@@ -367,7 +419,14 @@ export function insertPendingDecision(
     .prepare(
       "INSERT INTO pending_decisions (employee_id, goal_id, background, option_a, option_b, options) VALUES (?, ?, ?, ?, ?, ?) RETURNING *",
     )
-    .get(employeeId, goalId ?? null, background, optionA, optionB ?? null, options ? JSON.stringify(options) : null) as PendingDecision;
+    .get(
+      employeeId,
+      goalId ?? null,
+      background,
+      optionA,
+      optionB ?? null,
+      options ? JSON.stringify(options) : null,
+    ) as PendingDecision;
 }
 
 export function deletePendingDecision(id: number): void {
@@ -403,10 +462,19 @@ export function getDecisionsFiltered(opts: {
   offset?: number;
 }): Decision[] {
   const conditions: string[] = [];
-  const params: unknown[] = [];
-  if (opts.employeeId) { conditions.push("employee_id = ?"); params.push(opts.employeeId); }
-  if (opts.status) { conditions.push("result_tag = ?"); params.push(opts.status); }
-  if (opts.goalId !== undefined) { conditions.push("goal_id = ?"); params.push(opts.goalId); }
+  const params: Array<string | number | bigint | Buffer | null> = [];
+  if (opts.employeeId) {
+    conditions.push("employee_id = ?");
+    params.push(opts.employeeId);
+  }
+  if (opts.status) {
+    conditions.push("result_tag = ?");
+    params.push(opts.status);
+  }
+  if (opts.goalId !== undefined) {
+    conditions.push("goal_id = ?");
+    params.push(opts.goalId);
+  }
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
   params.push(opts.limit ?? 50);
   params.push(opts.offset ?? 0);
@@ -416,13 +484,16 @@ export function getDecisionsFiltered(opts: {
 }
 
 export function getDecisionStats(goalId?: number): Record<string, number> {
-  const rows = goalId !== undefined
-    ? getDb()
-        .prepare("SELECT result_tag, COUNT(*) as cnt FROM decisions WHERE goal_id = ? GROUP BY result_tag")
-        .all(goalId) as Array<{ result_tag: string; cnt: number }>
-    : getDb()
-        .prepare("SELECT result_tag, COUNT(*) as cnt FROM decisions GROUP BY result_tag")
-        .all() as Array<{ result_tag: string; cnt: number }>;
+  const rows =
+    goalId !== undefined
+      ? (getDb()
+          .prepare(
+            "SELECT result_tag, COUNT(*) as cnt FROM decisions WHERE goal_id = ? GROUP BY result_tag",
+          )
+          .all(goalId) as Array<{ result_tag: string; cnt: number }>)
+      : (getDb()
+          .prepare("SELECT result_tag, COUNT(*) as cnt FROM decisions GROUP BY result_tag")
+          .all() as Array<{ result_tag: string; cnt: number }>);
   return Object.fromEntries(rows.map((r) => [r.result_tag, r.cnt]));
 }
 
@@ -445,15 +516,15 @@ export function searchDecisionsByGoal(q: string, goalId: number): Decision[] {
 }
 
 export function updateDecisionTag(id: number, tag: Decision["result_tag"]): void {
-  getDb()
-    .prepare("UPDATE decisions SET result_tag = ? WHERE id = ?")
-    .run(tag, id);
+  getDb().prepare("UPDATE decisions SET result_tag = ? WHERE id = ?").run(tag, id);
 }
 
 // Reports
 export function insertReport(employeeId: string, content: string, goalId?: number): EmployeeReport {
   return getDb()
-    .prepare("INSERT INTO employee_reports (employee_id, goal_id, content) VALUES (?, ?, ?) RETURNING *")
+    .prepare(
+      "INSERT INTO employee_reports (employee_id, goal_id, content) VALUES (?, ?, ?) RETURNING *",
+    )
     .get(employeeId, goalId ?? null, content) as EmployeeReport;
 }
 
@@ -483,7 +554,11 @@ export function getReportsByDays(days: number, goalId?: number): EmployeeReport[
     .all(`-${days} days`) as EmployeeReport[];
 }
 
-export function getEmployeeReports(employeeId: string, limit = 10, goalId?: number): EmployeeReport[] {
+export function getEmployeeReports(
+  employeeId: string,
+  limit = 10,
+  goalId?: number,
+): EmployeeReport[] {
   if (goalId !== undefined) {
     return getDb()
       .prepare(
@@ -512,7 +587,9 @@ export type CustomEmployee = {
 };
 
 export function getCustomEmployees(): CustomEmployee[] {
-  return getDb().prepare("SELECT * FROM custom_employees ORDER BY created_at").all() as CustomEmployee[];
+  return getDb()
+    .prepare("SELECT * FROM custom_employees ORDER BY created_at")
+    .all() as CustomEmployee[];
 }
 
 export function insertCustomEmployee(emp: Omit<CustomEmployee, "created_at">): CustomEmployee {
@@ -520,8 +597,19 @@ export function insertCustomEmployee(emp: Omit<CustomEmployee, "created_at">): C
     .prepare(
       `INSERT INTO custom_employees (id, name, role, emoji, accent_color, system_prompt, cron_schedule, cron_prompt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(emp.id, emp.name, emp.role, emp.emoji, emp.accent_color, emp.system_prompt, emp.cron_schedule, emp.cron_prompt);
-  return getDb().prepare("SELECT * FROM custom_employees WHERE id = ?").get(emp.id) as CustomEmployee;
+    .run(
+      emp.id,
+      emp.name,
+      emp.role,
+      emp.emoji,
+      emp.accent_color,
+      emp.system_prompt,
+      emp.cron_schedule,
+      emp.cron_prompt,
+    );
+  return getDb()
+    .prepare("SELECT * FROM custom_employees WHERE id = ?")
+    .get(emp.id) as CustomEmployee;
 }
 
 export function deleteCustomEmployee(id: string): void {
@@ -555,7 +643,11 @@ export function getRecentActivity(limit = 50, goalId?: number): ActivityEvent[] 
     .all(limit) as ActivityEvent[];
 }
 
-export function getEmployeeActivity(employeeId: string, limit = 5, goalId?: number): ActivityEvent[] {
+export function getEmployeeActivity(
+  employeeId: string,
+  limit = 5,
+  goalId?: number,
+): ActivityEvent[] {
   if (goalId !== undefined) {
     return getDb()
       .prepare(
@@ -568,7 +660,21 @@ export function getEmployeeActivity(employeeId: string, limit = 5, goalId?: numb
     .all(employeeId, limit) as ActivityEvent[];
 }
 
-export function getEmployeeActivityForActiveGoals(employeeId: string, limit = 5, goalId?: number): ActivityEvent[] {
+/** Full reset: clear all transient data (pending decisions, decisions, activity, reports).
+ *  Goals, goal_tasks, and custom_employees are preserved. */
+export function clearAllTransientData(): void {
+  const db = getDb();
+  db.exec("DELETE FROM pending_decisions");
+  db.exec("DELETE FROM decisions");
+  db.exec("DELETE FROM activity_log");
+  db.exec("DELETE FROM employee_reports");
+}
+
+export function getEmployeeActivityForActiveGoals(
+  employeeId: string,
+  limit = 5,
+  goalId?: number,
+): ActivityEvent[] {
   if (goalId !== undefined) {
     return getEmployeeActivity(employeeId, limit, goalId);
   }

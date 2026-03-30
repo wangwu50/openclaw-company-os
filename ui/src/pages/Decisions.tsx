@@ -1,5 +1,5 @@
-import type { Decision, Employee, Goal } from "../types.js";
 import { useDecisions, useDecisionStats } from "../hooks/useApi.js";
+import type { Decision, Employee, Goal } from "../types.js";
 
 const STATUS_OPTIONS = [
   { value: "", label: "全部状态" },
@@ -56,10 +56,10 @@ export function Decisions({ employees, goals }: DecisionsProps) {
           flexWrap: "wrap",
         }}
       >
-        <h1 style={{ fontSize: "var(--text-xl)", fontWeight: 700 }}>
-          决策台账
-        </h1>
-        <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center", flexWrap: "wrap" }}>
+        <h1 style={{ fontSize: "var(--text-xl)", fontWeight: 700 }}>决策台账</h1>
+        <div
+          style={{ display: "flex", gap: "var(--space-2)", alignItems: "center", flexWrap: "wrap" }}
+        >
           {/* 目标筛选 */}
           <select
             value={goalFilter}
@@ -69,7 +69,9 @@ export function Decisions({ employees, goals }: DecisionsProps) {
           >
             <option value="">全部目标</option>
             {goals.map((g) => (
-              <option key={g.id} value={g.id}>#{g.id} {g.title}</option>
+              <option key={g.id} value={g.id}>
+                #{g.id} {g.title}
+              </option>
             ))}
           </select>
 
@@ -82,7 +84,9 @@ export function Decisions({ employees, goals }: DecisionsProps) {
           >
             <option value="">全部员工</option>
             {employees.map((e) => (
-              <option key={e.id} value={e.id}>{e.emoji} {e.name}</option>
+              <option key={e.id} value={e.id}>
+                {e.emoji} {e.name}
+              </option>
             ))}
           </select>
 
@@ -94,7 +98,9 @@ export function Decisions({ employees, goals }: DecisionsProps) {
             style={selectStyle}
           >
             {STATUS_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>{o.label}</option>
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
             ))}
           </select>
 
@@ -137,8 +143,17 @@ export function Decisions({ employees, goals }: DecisionsProps) {
                 gap: 4,
               }}
             >
-              <span style={{ fontSize: "var(--text-xs)", color: cfg.color, fontWeight: 600 }}>{o.label}</span>
-              <span style={{ fontSize: "var(--text-xl)", fontWeight: 700, color: cfg.color, lineHeight: 1 }}>
+              <span style={{ fontSize: "var(--text-xs)", color: cfg.color, fontWeight: 600 }}>
+                {o.label}
+              </span>
+              <span
+                style={{
+                  fontSize: "var(--text-xl)",
+                  fontWeight: 700,
+                  color: cfg.color,
+                  lineHeight: 1,
+                }}
+              >
                 {stats[o.value] ?? 0}
               </span>
             </div>
@@ -148,9 +163,7 @@ export function Decisions({ employees, goals }: DecisionsProps) {
 
       {/* Content */}
       {loading ? (
-        <div style={{ color: "var(--text-muted)", fontSize: "var(--text-sm)" }}>
-          加载中…
-        </div>
+        <div style={{ color: "var(--text-muted)", fontSize: "var(--text-sm)" }}>加载中…</div>
       ) : error ? (
         <div style={{ color: "var(--accent-error)", fontSize: "var(--text-sm)" }}>
           加载失败：{error}
@@ -338,7 +351,11 @@ function DecisionRow({ decision: d }: { decision: Decision }) {
         }}
       >
         <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
-          {new Date((d.created_at.includes("T") || d.created_at.endsWith("Z") ? d.created_at : d.created_at.replace(" ", "T") + "Z")).toLocaleString("zh-CN", {
+          {new Date(
+            d.created_at.includes("T") || d.created_at.endsWith("Z")
+              ? d.created_at
+              : d.created_at.replace(" ", "T") + "Z",
+          ).toLocaleString("zh-CN", {
             month: "short",
             day: "numeric",
             hour: "2-digit",
@@ -350,10 +367,7 @@ function DecisionRow({ decision: d }: { decision: Decision }) {
   );
 }
 
-const TAG_CONFIG: Record<
-  string,
-  { label: string; bg: string; color: string }
-> = {
+const TAG_CONFIG: Record<string, { label: string; bg: string; color: string }> = {
   pending: {
     label: "待执行",
     bg: "var(--accent-urgent)22",

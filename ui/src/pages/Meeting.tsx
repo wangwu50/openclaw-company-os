@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { Employee } from "../types.js";
 import { streamChatWithEmployee } from "../hooks/useApi.js";
+import type { Employee } from "../types.js";
 
 type EmployeeReply = {
   employeeId: string;
@@ -56,7 +56,9 @@ export function Meeting({ employees }: MeetingProps) {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return [];
-      const parsed = JSON.parse(raw) as Array<Omit<MeetingSession, "createdAt"> & { createdAt: string }>;
+      const parsed = JSON.parse(raw) as Array<
+        Omit<MeetingSession, "createdAt"> & { createdAt: string }
+      >;
       return parsed.map((s) => ({ ...s, createdAt: new Date(s.createdAt) }));
     } catch {
       return [];
@@ -81,7 +83,12 @@ export function Meeting({ employees }: MeetingProps) {
 
   const activeSession = sessions.find((s) => s.id === activeId) ?? null;
 
-  const runRound = async (sessionId: string, roundId: string, message: string, allPriorRounds: Round[]) => {
+  const runRound = async (
+    sessionId: string,
+    roundId: string,
+    message: string,
+    allPriorRounds: Round[],
+  ) => {
     const priorReplies: Array<{ name: string; role: string; text: string }> = [];
     const shuffled = [...employees].sort(() => Math.random() - 0.5);
 
@@ -122,7 +129,12 @@ export function Meeting({ employees }: MeetingProps) {
                 ...s,
                 rounds: s.rounds.map((r) =>
                   r.id === roundId
-                    ? { ...r, replies: r.replies.map((rp) => rp.employeeId === emp.id ? { ...rp, text: "" } : rp) }
+                    ? {
+                        ...r,
+                        replies: r.replies.map((rp) =>
+                          rp.employeeId === emp.id ? { ...rp, text: "" } : rp,
+                        ),
+                      }
                     : r,
                 ),
               }
@@ -144,7 +156,9 @@ export function Meeting({ employees }: MeetingProps) {
                         ? {
                             ...r,
                             replies: r.replies.map((rp) =>
-                              rp.employeeId === emp.id ? { ...rp, text: (rp.text ?? "") + chunk } : rp,
+                              rp.employeeId === emp.id
+                                ? { ...rp, text: (rp.text ?? "") + chunk }
+                                : rp,
                             ),
                           }
                         : r,
@@ -167,7 +181,11 @@ export function Meeting({ employees }: MeetingProps) {
                           ...r,
                           replies: r.replies.map((rp) =>
                             rp.employeeId === emp.id
-                              ? { ...rp, text: "", error: e instanceof Error ? e.message : String(e) }
+                              ? {
+                                  ...rp,
+                                  text: "",
+                                  error: e instanceof Error ? e.message : String(e),
+                                }
                               : rp,
                           ),
                         }
@@ -184,7 +202,7 @@ export function Meeting({ employees }: MeetingProps) {
     setSessions((prev) =>
       prev.map((s) =>
         s.id === sessionId
-          ? { ...s, rounds: s.rounds.map((r) => r.id === roundId ? { ...r, done: true } : r) }
+          ? { ...s, rounds: s.rounds.map((r) => (r.id === roundId ? { ...r, done: true } : r)) }
           : s,
       ),
     );
@@ -220,7 +238,9 @@ export function Meeting({ employees }: MeetingProps) {
       // Add round to existing session
       const priorRounds = activeSession.rounds;
       setSessions((prev) =>
-        prev.map((s) => s.id === activeSession.id ? { ...s, rounds: [...s.rounds, newRound] } : s),
+        prev.map((s) =>
+          s.id === activeSession.id ? { ...s, rounds: [...s.rounds, newRound] } : s,
+        ),
       );
       await runRound(activeSession.id, roundId, text, priorRounds);
     }
@@ -229,9 +249,7 @@ export function Meeting({ employees }: MeetingProps) {
   };
 
   const isRunning = running;
-  const placeholder = activeSession
-    ? "继续追问… (Enter 发送)"
-    : "向所有员工发起议题… (Enter 发送)";
+  const placeholder = activeSession ? "继续追问… (Enter 发送)" : "向所有员工发起议题… (Enter 发送)";
   const buttonLabel = isRunning ? "进行中…" : activeSession ? "追问" : "召开会议";
 
   return (
@@ -257,7 +275,15 @@ export function Meeting({ employees }: MeetingProps) {
             justifyContent: "space-between",
           }}
         >
-          <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600 }}>
+          <span
+            style={{
+              fontSize: "var(--text-xs)",
+              color: "var(--text-muted)",
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              fontWeight: 600,
+            }}
+          >
             会议记录
           </span>
           <button
@@ -312,14 +338,24 @@ export function Meeting({ employees }: MeetingProps) {
                   width: "100%",
                 }}
               >
-                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 2 }}>
+                <div
+                  style={{
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    marginBottom: 2,
+                  }}
+                >
                   {s.topic}
                 </div>
                 <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
                   {s.createdAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
-                  {" · "}{s.rounds.length} 轮
+                  {" · "}
+                  {s.rounds.length} 轮
                   {inProgress && (
-                    <span style={{ marginLeft: "var(--space-2)", color: "var(--accent-urgent)" }}>•</span>
+                    <span style={{ marginLeft: "var(--space-2)", color: "var(--accent-urgent)" }}>
+                      •
+                    </span>
                   )}
                 </div>
               </button>
@@ -329,7 +365,16 @@ export function Meeting({ employees }: MeetingProps) {
       </div>
 
       {/* Right panel */}
-      <main role="main" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
+      <main
+        role="main"
+        style={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          position: "relative",
+        }}
+      >
         {/* 导出纪要覆盖层 */}
         {exportMd !== null && (
           <ExportOverlay
@@ -507,7 +552,8 @@ function RoundBlock({
         }}
       >
         <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", marginBottom: 4 }}>
-          🎤 {roundIndex === 0
+          🎤{" "}
+          {roundIndex === 0
             ? `会议发起 · ${session.createdAt.toLocaleString("zh-CN", { month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
             : `第 ${roundIndex + 1} 轮追问`}
         </div>
@@ -537,19 +583,48 @@ function RoundBlock({
               transition: "opacity var(--transition-fast)",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", marginBottom: "var(--space-3)" }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "var(--space-2)",
+                marginBottom: "var(--space-3)",
+              }}
+            >
               <span style={{ fontSize: "16px" }}>{emp.emoji}</span>
-              <span style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--text-primary)" }}>{emp.name}</span>
-              <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>{emp.role}</span>
+              <span
+                style={{
+                  fontSize: "var(--text-sm)",
+                  fontWeight: 600,
+                  color: "var(--text-primary)",
+                }}
+              >
+                {emp.name}
+              </span>
+              <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
+                {emp.role}
+              </span>
             </div>
             {isPending ? (
-              <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>等待发言…</span>
+              <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
+                等待发言…
+              </span>
             ) : isStreaming ? (
               <MiniWave color={emp.accentColor} />
             ) : isError ? (
-              <p style={{ fontSize: "var(--text-sm)", color: "var(--accent-error)" }}>[错误] {reply.error}</p>
+              <p style={{ fontSize: "var(--text-sm)", color: "var(--accent-error)" }}>
+                [错误] {reply.error}
+              </p>
             ) : (
-              <p style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)", lineHeight: "var(--leading-normal)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+              <p
+                style={{
+                  fontSize: "var(--text-sm)",
+                  color: "var(--text-primary)",
+                  lineHeight: "var(--leading-normal)",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                }}
+              >
                 {reply.text}
               </p>
             )}
@@ -648,7 +723,9 @@ function ExportOverlay({
       >
         {/* 标题栏 */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--text-primary)" }}>
+          <span
+            style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--text-primary)" }}
+          >
             会议纪要预览
           </span>
           <button

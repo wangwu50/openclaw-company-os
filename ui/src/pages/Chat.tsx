@@ -1,7 +1,37 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
+import { Md } from "../components/Markdown.js";
+import {
+  clearChatSession,
+  sendDecision,
+  streamChatWithEmployee,
+  useActivity,
+} from "../hooks/useApi.js";
 import type { ActivityEvent, Employee, Goal } from "../types.js";
-import { streamChatWithEmployee, useActivity } from "../hooks/useApi.js";
+
+// Detect one or more <需要决策 options="A|B|C">background</需要决策> tags in assistant messages
+type SingleDecision = { background: string; options: string[] };
+
+type ParsedDecisions = {
+  decisions: SingleDecision[];
+  cleanText: string;
+};
+
+function parsePendingDecisions(text: string): ParsedDecisions | null {
+  const re = /<需要决策\s+options="([^"]+)">([\s\S]*?)<\/需要决策>/g;
+  const decisions: SingleDecision[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const options = m[1]
+      .split("|")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (options.length >= 2) decisions.push({ background: m[2].trim(), options });
+  }
+  if (decisions.length === 0) return null;
+  const cleanText = text.replace(/<需要决策\s+options="[^"]+">[\s\S]*?<\/需要决策>/g, "").trim();
+  return { decisions, cleanText };
+}
 
 const EVENT_ICONS: Record<string, string> = {
   task_assigned: "📋",
@@ -49,7 +79,7 @@ export function Chat({ employees, goals }: ChatProps) {
   const scopeKey = goalId === undefined ? "all" : String(goalId);
 
   const goalsForEmp = goals.filter((g) => g.tasks.some((t) => t.employee_id === employeeId));
-  const activeGoal = goalId === undefined ? null : goals.find((g) => g.id === goalId) ?? null;
+  const activeGoal = goalId === undefined ? null : (goals.find((g) => g.id === goalId) ?? null);
 
   // Load persisted goal scope per employee
   useEffect(() => {
@@ -57,9 +87,9 @@ export function Chat({ employees, goals }: ChatProps) {
     const raw = localStorage.getItem(`chat-scope:${employeeId}`);
     const parsed = raw ? Number(raw) : NaN;
     if (
-      Number.isFinite(parsed)
-      && goals.some((g) => g.id === parsed)
-      && goals.some((g) => g.id === parsed && g.tasks.some((t) => t.employee_id === employeeId))
+      Number.isFinite(parsed) &&
+      goals.some((g) => g.id === parsed) &&
+      goals.some((g) => g.id === parsed && g.tasks.some((t) => t.employee_id === employeeId))
     ) {
       setGoalId(parsed);
     } else {
@@ -81,7 +111,10 @@ export function Chat({ employees, goals }: ChatProps) {
     setInput("");
     setThinking(false);
     setTimedOut(false);
-    if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
     saveKeyRef.current = `${employeeId ?? ""}:goal:${scopeKey}`; // resume saving for this scope
   }, [employeeId, scopeKey]);
 
@@ -142,14 +175,22 @@ export function Chat({ employees, goals }: ChatProps) {
     setMessages((prev) => [...prev, { id: assistantId, role: "assistant", text: "" }]);
 
     try {
-      await streamChatWithEmployee(emp.id, text, (chunk) => {
-        setMessages((prev) =>
-          prev.map((m) => m.id === assistantId ? { ...m, text: m.text + chunk } : m),
-        );
-        // Clear the "thinking" state on first chunk
-        setThinking(false);
-        if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
-      }, goalId);
+      await streamChatWithEmployee(
+        emp.id,
+        text,
+        (chunk) => {
+          setMessages((prev) =>
+            prev.map((m) => (m.id === assistantId ? { ...m, text: m.text + chunk } : m)),
+          );
+          // Clear the "thinking" state on first chunk
+          setThinking(false);
+          if (timeoutRef.current) {
+            clearTimeout(timeoutRef.current);
+            timeoutRef.current = null;
+          }
+        },
+        goalId,
+      );
     } catch (e) {
       setMessages((prev) =>
         prev.map((m) =>
@@ -161,7 +202,10 @@ export function Chat({ employees, goals }: ChatProps) {
     } finally {
       setThinking(false);
       setTimedOut(false);
-      if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
     }
   };
 
@@ -181,14 +225,17 @@ export function Chat({ employees, goals }: ChatProps) {
       >
         <span style={{ fontSize: "22px" }}>{emp.emoji}</span>
         <div>
-          <div style={{ fontSize: "var(--text-base)", fontWeight: 600 }}>
-            {emp.name}
-          </div>
-          <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
-            {emp.role}
-          </div>
+          <div style={{ fontSize: "var(--text-base)", fontWeight: 600 }}>{emp.name}</div>
+          <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>{emp.role}</div>
         </div>
-        <div style={{ marginLeft: "var(--space-3)", display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+        <div
+          style={{
+            marginLeft: "var(--space-3)",
+            display: "flex",
+            alignItems: "center",
+            gap: "var(--space-2)",
+          }}
+        >
           <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>目标隔离</span>
           <select
             value={goalId ?? ""}
@@ -215,16 +262,40 @@ export function Chat({ employees, goals }: ChatProps) {
             ))}
           </select>
         </div>
-        <span
+        <div
           style={{
-            width: 8,
-            height: 8,
-            borderRadius: "50%",
-            background: "var(--accent-done)",
             marginLeft: "auto",
+            display: "flex",
+            alignItems: "center",
+            gap: "var(--space-2)",
           }}
-          title="在线"
-        />
+        >
+          {messages.length > 0 && (
+            <button
+              onClick={() => {
+                setMessages([]);
+                localStorage.removeItem(`chat:${employeeId ?? ""}:goal:${scopeKey}`);
+                void clearChatSession(employeeId ?? "").catch(() => void 0);
+              }}
+              title="清空聊天记录"
+              style={{
+                background: "none",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius-sm)",
+                color: "var(--text-muted)",
+                fontSize: "var(--text-xs)",
+                padding: "2px 8px",
+                cursor: "pointer",
+              }}
+            >
+              清空
+            </button>
+          )}
+          <span
+            style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--accent-done)" }}
+            title="在线"
+          />
+        </div>
       </div>
       {activeGoal && (
         <div
@@ -252,10 +323,7 @@ export function Chat({ employees, goals }: ChatProps) {
         }}
       >
         {/* Activity feed — work history from the employee */}
-        {empActivity.length > 0 && (
-          <ActivityFeed activity={empActivity} emp={emp} />
-        )}
-
+        {empActivity.length > 0 && <ActivityFeed activity={empActivity} emp={emp} />}
         {messages.length === 0 && !thinking && empActivity.length === 0 && (
           <div
             style={{
@@ -264,26 +332,26 @@ export function Chat({ employees, goals }: ChatProps) {
               color: "var(--text-muted)",
             }}
           >
-            <div style={{ fontSize: 32, marginBottom: "var(--space-3)" }}>
-              {emp.emoji}
-            </div>
-            <div style={{ fontSize: "var(--text-sm)" }}>
-              和 {emp.name} 开始对话
-            </div>
+            <div style={{ fontSize: 32, marginBottom: "var(--space-3)" }}>{emp.emoji}</div>
+            <div style={{ fontSize: "var(--text-sm)" }}>和 {emp.name} 开始对话</div>
           </div>
         )}
-
         {messages.length === 0 && empActivity.length > 0 && !thinking && (
-          <div style={{ textAlign: "center", color: "var(--text-muted)", fontSize: "var(--text-xs)", padding: "var(--space-4) 0" }}>
+          <div
+            style={{
+              textAlign: "center",
+              color: "var(--text-muted)",
+              fontSize: "var(--text-xs)",
+              padding: "var(--space-4) 0",
+            }}
+          >
             ↓ 在此发消息，直接和 {emp.name} 对话
           </div>
         )}
-
         {messages.map((msg) => (
-          <MessageBubble key={msg.id} msg={msg} emp={emp} />
+          <MessageBubble key={msg.id} msg={msg} emp={emp} goalId={goalId} />
         ))}
-
-        {thinking && <ThinkingBubble emp={emp} timedOut={timedOut} />}        <div ref={bottomRef} />
+        {thinking && <ThinkingBubble emp={emp} timedOut={timedOut} />} <div ref={bottomRef} />
       </div>
 
       {/* Input area */}
@@ -348,14 +416,10 @@ export function Chat({ employees, goals }: ChatProps) {
   );
 }
 
-function MessageBubble({
-  msg,
-  emp,
-}: {
-  msg: Message;
-  emp: Employee;
-}) {
+function MessageBubble({ msg, emp, goalId }: { msg: Message; emp: Employee; goalId?: number }) {
   const isUser = msg.role === "user";
+  const parsed = !isUser ? parsePendingDecisions(msg.text) : null;
+  const displayText = parsed ? parsed.cleanText : msg.text;
 
   return (
     <div
@@ -384,23 +448,153 @@ function MessageBubble({
         {isUser ? "你" : emp.emoji}
       </div>
 
-      {/* Bubble */}
+      {/* Bubble + optional inline decision card */}
       <div
+        style={{ maxWidth: "70%", display: "flex", flexDirection: "column", gap: "var(--space-2)" }}
+      >
+        {displayText && (
+          <div
+            style={{
+              background: isUser ? "var(--accent-agent)" : "var(--bg-card)",
+              border: isUser ? "none" : "1px solid var(--border)",
+              borderRadius: "var(--radius)",
+              padding: "var(--space-3) var(--space-4)",
+              fontSize: "var(--text-sm)",
+              color: isUser ? "#fff" : "var(--text-primary)",
+            }}
+          >
+            {isUser ? (
+              <span
+                style={{
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  lineHeight: "var(--leading-normal)",
+                }}
+              >
+                {displayText}
+              </span>
+            ) : (
+              <Md>{displayText}</Md>
+            )}
+          </div>
+        )}
+        {parsed &&
+          parsed.decisions.map((decision, i) => (
+            <InlinePendingDecisionCard
+              key={i}
+              decision={decision}
+              employeeId={emp.id}
+              goalId={goalId}
+            />
+          ))}
+      </div>
+    </div>
+  );
+}
+
+function InlinePendingDecisionCard({
+  decision,
+  employeeId,
+  goalId,
+}: {
+  decision: SingleDecision;
+  employeeId: string;
+  goalId?: number;
+}) {
+  const [decided, setDecided] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleDecide = async (choice: string) => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      await sendDecision({ employeeId, summary: decision.background, choice, goalId });
+      setDecided(choice);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        background: "var(--bg-card)",
+        border: "1px solid var(--border)",
+        borderLeft: "3px solid var(--accent-urgent, #f5a623)",
+        borderRadius: "var(--radius)",
+        padding: "var(--space-3) var(--space-4)",
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-3)",
+        opacity: submitting ? 0.7 : 1,
+        transition: "opacity 150ms",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+        <span style={{ fontSize: "12px" }}>⚡</span>
+        <span
+          style={{
+            fontSize: "var(--text-xs)",
+            color: "var(--text-muted)",
+            fontWeight: 600,
+            textTransform: "uppercase",
+            letterSpacing: "0.06em",
+          }}
+        >
+          待决请求
+        </span>
+      </div>
+      <p
         style={{
-          maxWidth: "70%",
-          background: isUser ? "var(--accent-agent)" : "var(--bg-card)",
-          border: isUser ? "none" : "1px solid var(--border)",
-          borderRadius: "var(--radius)",
-          padding: "var(--space-3) var(--space-4)",
           fontSize: "var(--text-sm)",
-          color: isUser ? "#fff" : "var(--text-primary)",
-          lineHeight: "var(--leading-normal)",
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-word",
+          color: "var(--text-primary)",
+          lineHeight: "1.5",
+          margin: 0,
         }}
       >
-        {msg.text}
-      </div>
+        {decision.background}
+      </p>
+      {decided ? (
+        <div
+          style={{
+            fontSize: "var(--text-xs)",
+            color: "var(--accent-done, #4caf82)",
+            fontWeight: 600,
+          }}
+        >
+          ✅ 已选：{decided}
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-2)" }}>
+          {decision.options.map((opt, i) => (
+            <button
+              key={i}
+              onClick={() => void handleDecide(opt)}
+              disabled={submitting}
+              style={{
+                background: i === 0 ? "var(--accent-urgent, #f5a623)" : "var(--bg-base)",
+                border: `1px solid ${i === 0 ? "var(--accent-urgent, #f5a623)" : "var(--border)"}`,
+                borderRadius: "var(--radius-sm, 6px)",
+                color: i === 0 ? "#fff" : "var(--text-secondary)",
+                fontSize: "var(--text-xs)",
+                fontWeight: 600,
+                padding: "4px 12px",
+                cursor: submitting ? "not-allowed" : "pointer",
+              }}
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
+      )}
+      {error && (
+        <div style={{ fontSize: "var(--text-xs)", color: "var(--accent-error, #e05c5c)" }}>
+          {error}
+        </div>
+      )}
     </div>
   );
 }
@@ -511,13 +705,28 @@ function ActivityFeed({ activity, emp }: { activity: ActivityEvent[]; emp: Emplo
       }}
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+        <span
+          style={{
+            fontSize: "var(--text-xs)",
+            color: "var(--text-muted)",
+            fontWeight: 600,
+            textTransform: "uppercase",
+            letterSpacing: "0.06em",
+          }}
+        >
           {emp.name} 的工作动态
         </span>
         {activity.length > 3 && (
           <button
             onClick={() => setExpanded((v) => !v)}
-            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--accent-agent)", fontSize: "var(--text-xs)", padding: 0 }}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              color: "var(--accent-agent)",
+              fontSize: "var(--text-xs)",
+              padding: 0,
+            }}
           >
             {expanded ? "收起" : `显示全部 ${activity.length} 条`}
           </button>
@@ -526,14 +735,28 @@ function ActivityFeed({ activity, emp }: { activity: ActivityEvent[]; emp: Emplo
       {shown.map((event) => (
         <div key={event.id} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
           <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center" }}>
-            <span style={{ background: "var(--bg-base)", border: "1px solid var(--border)", borderRadius: 4, padding: "1px 5px", fontSize: "10px", color: "var(--text-muted)" }}>
-              {EVENT_ICONS[event.event_type] ?? "•"} {EVENT_LABELS[event.event_type] ?? event.event_type}
+            <span
+              style={{
+                background: "var(--bg-base)",
+                border: "1px solid var(--border)",
+                borderRadius: 4,
+                padding: "1px 5px",
+                fontSize: "10px",
+                color: "var(--text-muted)",
+              }}
+            >
+              {EVENT_ICONS[event.event_type] ?? "•"}{" "}
+              {EVENT_LABELS[event.event_type] ?? event.event_type}
             </span>
-            <span style={{ marginLeft: "auto", fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>{formatTimeAgo(event.created_at)}</span>
+            <span
+              style={{ marginLeft: "auto", fontSize: "var(--text-xs)", color: "var(--text-muted)" }}
+            >
+              {formatTimeAgo(event.created_at)}
+            </span>
           </div>
-          <div style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)", lineHeight: "1.5", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+          <Md compact style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)" }}>
             {event.content}
-          </div>
+          </Md>
         </div>
       ))}
     </div>
@@ -541,7 +764,8 @@ function ActivityFeed({ activity, emp }: { activity: ActivityEvent[]; emp: Emplo
 }
 
 function formatTimeAgo(dateStr: string): string {
-  const utcStr = dateStr.includes("T") || dateStr.endsWith("Z") ? dateStr : dateStr.replace(" ", "T") + "Z";
+  const utcStr =
+    dateStr.includes("T") || dateStr.endsWith("Z") ? dateStr : dateStr.replace(" ", "T") + "Z";
   const diff = Date.now() - new Date(utcStr).getTime();
   const mins = Math.floor(diff / 60_000);
   if (mins < 1) return "刚刚";

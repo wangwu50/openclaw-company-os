@@ -1,6 +1,7 @@
 # Agent Terminal Issue Log
 
 ## Description
+
 - This file is the issue fact log for recent execution problems.
 - Load this file before each task to review recent issue patterns and avoid repeating them.
 - Add a new entry whenever execution hits a real problem such as rework, misjudgment, omission, rollback, compatibility pit, validation gap, command misuse, or unintended scope expansion.
@@ -10,9 +11,11 @@
 - Use datetime format `YYYY-MM-DD HH:MM` (24h).
 
 ## Mandatory Action
+
 - MUST: If this registration table reaches 50 entries, summarize the stable and reusable lessons into `agent-guidelines.md`, then clear only the summarized issue rows.
 
 ## Registration Table
+
 | Time | Problem | Action | Verification |
-| --- | --- | --- | --- |
-|  |  |  |  |
+| ---- | ------- | ------ | ------------ |
+|      |         |        |              |

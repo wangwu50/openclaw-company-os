@@ -23,6 +23,7 @@ import {
   insertCustomEmployee,
   deleteCustomEmployee,
   getCustomEmployees,
+  clearAllTransientData,
 } from "./db.js";
 import { getAllEmployees, getAnyEmployee } from "./employees.js";
 
@@ -31,8 +32,18 @@ const CHIEF_ID = "company-coo";
 type RouteContext = {
   req: IncomingMessage;
   res: ServerResponse;
-  runAgent: (employeeId: string, prompt: string, goalId?: number, streaming?: boolean) => Promise<string>;
-  runAgentStream: (employeeId: string, prompt: string, onChunk: (text: string) => void, goalId?: number) => Promise<void>;
+  runAgent: (
+    employeeId: string,
+    prompt: string,
+    goalId?: number,
+    streaming?: boolean,
+  ) => Promise<string>;
+  runAgentStream: (
+    employeeId: string,
+    prompt: string,
+    onChunk: (text: string) => void,
+    goalId?: number,
+  ) => Promise<void>;
   decomposGoal: (goalId: number, title: string, description: string) => Promise<void>;
   scheduleFollowUp: (employeeId: string, delayMs?: number, goalId?: number) => void;
   generateEmployee: (description: string) => Promise<Record<string, string>>;
@@ -124,11 +135,18 @@ export async function handleApiRequest(ctx: RouteContext): Promise<void> {
       if (q) {
         decisions = goalId !== undefined ? searchDecisionsByGoal(q, goalId) : searchDecisions(q);
       } else if (employee || status) {
-        decisions = getDecisionsFiltered({ employeeId: employee || undefined, status: status || undefined, goalId, limit, offset });
+        decisions = getDecisionsFiltered({
+          employeeId: employee || undefined,
+          status: status || undefined,
+          goalId,
+          limit,
+          offset,
+        });
       } else {
-        decisions = goalId !== undefined
-          ? getDecisionsFiltered({ goalId, limit, offset })
-          : getDecisions(limit, offset);
+        decisions =
+          goalId !== undefined
+            ? getDecisionsFiltered({ goalId, limit, offset })
+            : getDecisions(limit, offset);
       }
       return json(res, { decisions });
     }
@@ -136,7 +154,7 @@ export async function handleApiRequest(ctx: RouteContext): Promise<void> {
     // POST /company/api/decisions — CEO makes a decision
     if (req.method === "POST" && path === "/company/api/decisions") {
       const body = await parseBody(req);
-      const { pendingId, employeeId, summary, choice, context } = body as {
+      const { pendingId, employeeId, summary, choice, context, goalId } = body as {
         pendingId?: number;
         employeeId: string;
         summary: string;
@@ -169,15 +187,23 @@ CEO 的选择：${choice}
 ${context ? `附加说明：${context}` : ""}
 请确认收到并说明你的下一步行动计划（2-3 句话）。`;
         setImmediate(() => {
-          void ctx.runAgent(employeeId, notifyPrompt, goalId).then((reply) => {
-            if (reply) {
-              insertActivity(employeeId, "task_response", `${empName} 回复：${reply}`, { summary, choice, phase: "response", goalId });
-              // Employee acknowledged → mark as in_progress
-              updateDecisionTag(decision.id, "in_progress");
-              // Schedule follow-up so employee actually executes instead of just acknowledging
-              ctx.scheduleFollowUp(employeeId, 60 * 1000, goalId);
-            }
-          }).catch(() => void 0);
+          void ctx
+            .runAgent(employeeId, notifyPrompt, goalId)
+            .then((reply) => {
+              if (reply) {
+                insertActivity(employeeId, "task_response", `${empName} 回复：${reply}`, {
+                  summary,
+                  choice,
+                  phase: "response",
+                  goalId,
+                });
+                // Employee acknowledged → mark as in_progress
+                updateDecisionTag(decision.id, "in_progress");
+                // Schedule follow-up so employee actually executes instead of just acknowledging
+                ctx.scheduleFollowUp(employeeId, 60 * 1000, goalId);
+              }
+            })
+            .catch(() => void 0);
         });
       }
       return json(res, { decision });
@@ -186,7 +212,7 @@ ${context ? `附加说明：${context}` : ""}
     // POST /company/api/decisions/pending — employee files a decision request
     if (req.method === "POST" && path === "/company/api/decisions/pending") {
       const body = await parseBody(req);
-      const { employeeId, background, optionA, optionB, options } = body as {
+      const { employeeId, background, optionA, optionB, options, goalId } = body as {
         employeeId: string;
         background: string;
         optionA: string;
@@ -197,10 +223,27 @@ ${context ? `附加说明：${context}` : ""}
       if (!employeeId || !background || !optionA) {
         return json(res, { error: "employeeId, background, optionA are required" }, 400);
       }
-      const pending = insertPendingDecision(employeeId, background, optionA, optionB, options, goalId);
+      if (employeeId !== CHIEF_ID) {
+        return json(res, { error: "只有 COO 可以向 CEO 提交待决事项" }, 403);
+      }
+      const pending = insertPendingDecision(
+        employeeId,
+        background,
+        optionA,
+        optionB,
+        options,
+        goalId,
+      );
       // Log to activity
-      const label = options && options.length >= 2 ? options.join(" | ") : (optionB ? `选A: ${optionA} | 选B: ${optionB}` : optionA);
-      insertActivity(employeeId, "pending_decision", `[待决] ${background}（${label}）`, { goalId });
+      const label =
+        options && options.length >= 2
+          ? options.join(" | ")
+          : optionB
+            ? `选A: ${optionA} | 选B: ${optionB}`
+            : optionA;
+      insertActivity(employeeId, "pending_decision", `[待决] ${background}（${label}）`, {
+        goalId,
+      });
       return json(res, { pending });
     }
 
@@ -245,7 +288,7 @@ ${context ? `附加说明：${context}` : ""}
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
+        Connection: "keep-alive",
         "X-Accel-Buffering": "no",
       });
 
@@ -254,15 +297,63 @@ ${context ? `附加说明：${context}` : ""}
       };
 
       try {
-        await ctx.runAgentStream(employeeId, message, (chunk) => {
-          write("chunk", chunk);
-        }, goalId);
+        await ctx.runAgentStream(
+          employeeId,
+          message,
+          (chunk) => {
+            write("chunk", chunk);
+          },
+          goalId,
+        );
         write("done", "");
       } catch (err) {
         write("error", err instanceof Error ? err.message : String(err));
       }
       res.end();
       return;
+    }
+
+    // DELETE /company/api/sessions — clear all employees' session history (optional ?goalId=X)
+    if (req.method === "DELETE" && path === "/company/api/sessions") {
+      const goalId = parseGoalId(url.searchParams.get("goalId"));
+      const { join } = await import("node:path");
+      const { homedir } = await import("node:os");
+      const { existsSync, unlinkSync, readdirSync } = await import("node:fs");
+      const agentDir = join(homedir(), ".openclaw", "agents");
+      for (const emp of getAllEmployees()) {
+        const empDir = join(agentDir, emp.id);
+        if (!existsSync(empDir)) continue;
+        if (goalId !== undefined) {
+          // goal-scoped session: goal-<n>/sessions.json
+          const f = join(empDir, `goal-${goalId}`, "sessions.json");
+          if (existsSync(f)) unlinkSync(f);
+        } else {
+          // global session lives under sessions/sessions.json
+          const f = join(empDir, "sessions", "sessions.json");
+          if (existsSync(f)) unlinkSync(f);
+          // also sweep all goal-scoped sessions
+          for (const entry of readdirSync(empDir)) {
+            if (entry.startsWith("goal-")) {
+              const gf = join(empDir, entry, "sessions.json");
+              if (existsSync(gf)) unlinkSync(gf);
+            }
+          }
+        }
+      }
+      return json(res, { ok: true });
+    }
+
+    // DELETE /company/api/chat/:employeeId/session — clear agent session history
+    if (req.method === "DELETE" && path.match(/^\/company\/api\/chat\/[^/]+\/session$/)) {
+      const employeeId = path.slice("/company/api/chat/".length).replace("/session", "");
+      const { join } = await import("node:path");
+      const { homedir } = await import("node:os");
+      const { existsSync, unlinkSync } = await import("node:fs");
+      const agentDir = join(homedir(), ".openclaw", "agents", employeeId);
+      // global session is under sessions/sessions.json
+      const sessionFile = join(agentDir, "sessions", "sessions.json");
+      if (existsSync(sessionFile)) unlinkSync(sessionFile);
+      return json(res, { ok: true });
     }
 
     // POST /company/api/chat/:employeeId — CEO sends a message to an employee
@@ -310,7 +401,10 @@ ${context ? `附加说明：${context}` : ""}
           ["点击「重新拆解任务」重试", "检查模型配置/网络后重试"],
           goal.id,
         );
-        insertActivity("company-coo", "pending_decision", `[待决] ${background}`, { goalId: goal.id, phase: "decompose_error" });
+        insertActivity("company-coo", "pending_decision", `[待决] ${background}`, {
+          goalId: goal.id,
+          phase: "decompose_error",
+        });
       });
       return json(res, { goal, message: "目标已设置，AI 正在拆解任务..." });
     }
@@ -375,7 +469,10 @@ ${context ? `附加说明：${context}` : ""}
         return json(res, { error: "priority must be low | normal | high" }, 400);
       }
       if (extraGoalIds !== undefined && extraGoalIds !== null) {
-        if (!Array.isArray(extraGoalIds) || !(extraGoalIds as unknown[]).every((x) => typeof x === "number")) {
+        if (
+          !Array.isArray(extraGoalIds) ||
+          !(extraGoalIds as unknown[]).every((x) => typeof x === "number")
+        ) {
           return json(res, { error: "extraGoalIds must be an array of numbers or null" }, 400);
         }
       }
@@ -383,7 +480,9 @@ ${context ? `附加说明：${context}` : ""}
         ...(status !== undefined && { status }),
         ...(deadline !== undefined && { deadline }),
         ...(priority !== undefined && { priority: priority as "low" | "normal" | "high" }),
-        ...(extraGoalIds !== undefined && { extraGoalIds: extraGoalIds === null ? null : (extraGoalIds as number[]) }),
+        ...(extraGoalIds !== undefined && {
+          extraGoalIds: extraGoalIds === null ? null : (extraGoalIds as number[]),
+        }),
       });
       return json(res, { ok: true });
     }
@@ -400,10 +499,17 @@ ${context ? `附加说明：${context}` : ""}
     // POST /company/api/employees — save a custom employee
     if (req.method === "POST" && path === "/company/api/employees") {
       const body = await parseBody(req);
-      const { id, name, role, emoji, accentColor, systemPrompt, cronSchedule, cronPrompt } = body as {
-        id: string; name: string; role: string; emoji: string;
-        accentColor: string; systemPrompt: string; cronSchedule: string; cronPrompt: string;
-      };
+      const { id, name, role, emoji, accentColor, systemPrompt, cronSchedule, cronPrompt } =
+        body as {
+          id: string;
+          name: string;
+          role: string;
+          emoji: string;
+          accentColor: string;
+          systemPrompt: string;
+          cronSchedule: string;
+          cronPrompt: string;
+        };
       if (!id || !name || !role) return json(res, { error: "id, name, role are required" }, 400);
       insertCustomEmployee({
         id,
@@ -418,9 +524,12 @@ ${context ? `附加说明：${context}` : ""}
       // 异步触发入职引导，不阻塞响应
       const onboardingPrompt = `你刚刚加入公司，角色是${role}。请做一个简短的自我介绍（2-3句），并说明你将如何为公司创造价值。以「[入职] 」开头。`;
       setImmediate(() => {
-        void ctx.runAgent(id, onboardingPrompt).then((reply) => {
-          if (reply) insertActivity(id, "task_response", reply);
-        }).catch(() => void 0);
+        void ctx
+          .runAgent(id, onboardingPrompt)
+          .then((reply) => {
+            if (reply) insertActivity(id, "task_response", reply);
+          })
+          .catch(() => void 0);
       });
       return json(res, { ok: true });
     }
@@ -429,6 +538,36 @@ ${context ? `附加说明：${context}` : ""}
     if (req.method === "DELETE" && path.startsWith("/company/api/employees/")) {
       const empId = path.slice("/company/api/employees/".length);
       deleteCustomEmployee(empId);
+      return json(res, { ok: true });
+    }
+
+    // DELETE /company/api/reset — wipe all transient data + ALL session files for a clean slate
+    if (req.method === "DELETE" && path === "/company/api/reset") {
+      clearAllTransientData();
+      const { join } = await import("node:path");
+      const { homedir } = await import("node:os");
+      const { existsSync, unlinkSync, readdirSync, statSync } = await import("node:fs");
+      // Walk ALL agent dirs under ~/.openclaw/agents/ and delete every sessions.json
+      const agentsRoot = join(homedir(), ".openclaw", "agents");
+      if (existsSync(agentsRoot)) {
+        for (const agentId of readdirSync(agentsRoot)) {
+          // only process company-* agents and the internal ones (decomposer, etc.)
+          const empDir = join(agentsRoot, agentId);
+          try {
+            if (!statSync(empDir).isDirectory()) continue;
+          } catch {
+            continue;
+          }
+          // sessions.json can be at root or inside sessions/ subdir depending on agent type
+          const rootSession = join(empDir, "sessions.json");
+          if (existsSync(rootSession)) unlinkSync(rootSession);
+          // all subdirs (sessions/, goal-*, ai-scheduler, …)
+          for (const sub of readdirSync(empDir)) {
+            const subPath = join(empDir, sub, "sessions.json");
+            if (existsSync(subPath)) unlinkSync(subPath);
+          }
+        }
+      }
       return json(res, { ok: true });
     }
 

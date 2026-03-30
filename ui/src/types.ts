@@ -66,7 +66,12 @@ export type EmployeeReport = {
 export type ActivityEvent = {
   id: number;
   employee_id: string;
-  event_type: "task_assigned" | "task_response" | "report" | "pending_decision" | "decision_received";
+  event_type:
+    | "task_assigned"
+    | "task_response"
+    | "report"
+    | "pending_decision"
+    | "decision_received";
   content: string;
   meta: string | null;
   created_at: string;

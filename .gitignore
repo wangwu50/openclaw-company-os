@@ -3,3 +3,4 @@ ui/node_modules/
 *.log
 
 # 注意：ui/dist/ 需要提交到 git，不在此排除
+.DS_Store

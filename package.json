@@ -5,7 +5,10 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "build": "tsdown --entry index.ts --platform node --target node22 --format esm --out-dir . --no-dts --no-clean --external openclaw --external 'node:*'"
+    "build": "tsdown --entry index.ts --platform node --target node22 --format esm --out-dir . --no-dts --no-clean --external openclaw --external 'node:*'",
+    "dev": "bash dev.sh",
+    "dev:no-open": "bash dev.sh --no-open",
+    "dev:rebuild": "bash dev.sh --rebuild"
   },
   "dependencies": {
     "openclaw": ">=2026.3.14"

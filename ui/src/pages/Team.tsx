@@ -1,5 +1,5 @@
-import type { HallData, ActivityEvent } from "../types.js";
 import { useActivity } from "../hooks/useApi.js";
+import type { HallData, ActivityEvent } from "../types.js";
 
 type TeamProps = {
   data: HallData;
@@ -92,10 +92,18 @@ export function Team({ data }: TeamProps) {
               <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
                 <span style={{ fontSize: 24 }}>{emp.emoji}</span>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: "var(--text-sm)", fontWeight: 700, color: "var(--text-primary)" }}>
+                  <div
+                    style={{
+                      fontSize: "var(--text-sm)",
+                      fontWeight: 700,
+                      color: "var(--text-primary)",
+                    }}
+                  >
                     {emp.name}
                   </div>
-                  <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>{emp.role}</div>
+                  <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
+                    {emp.role}
+                  </div>
                 </div>
                 {/* NEW badge — 自定义员工且尚无任何活动记录时显示 */}
                 {emp.isCustom && recentActivity.length === 0 && (
@@ -222,7 +230,13 @@ export function Team({ data }: TeamProps) {
               )}
 
               {tasks.length === 0 && (
-                <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", fontStyle: "italic" }}>
+                <div
+                  style={{
+                    fontSize: "var(--text-xs)",
+                    color: "var(--text-muted)",
+                    fontStyle: "italic",
+                  }}
+                >
                   尚未分配任务
                 </div>
               )}
@@ -240,8 +254,16 @@ function StatusPill({ tasks }: { tasks: HallData["goals"][0]["tasks"] }) {
   const done = tasks.filter((t) => t.status === "done").length;
   const inProgress = tasks.filter((t) => t.status === "in_progress").length;
   const allDone = done === total;
-  const color = allDone ? "var(--accent-done)" : inProgress > 0 ? "var(--accent-urgent)" : "var(--text-muted)";
-  const label = allDone ? "全完成" : inProgress > 0 ? `${inProgress} 进行中` : `${total - done} 待开始`;
+  const color = allDone
+    ? "var(--accent-done)"
+    : inProgress > 0
+      ? "var(--accent-urgent)"
+      : "var(--text-muted)";
+  const label = allDone
+    ? "全完成"
+    : inProgress > 0
+      ? `${inProgress} 进行中`
+      : `${total - done} 待开始`;
 
   return (
     <span
@@ -261,7 +283,8 @@ function StatusPill({ tasks }: { tasks: HallData["goals"][0]["tasks"] }) {
 }
 
 function formatTimeAgo(dateStr: string): string {
-  const utcStr = dateStr.includes("T") || dateStr.endsWith("Z") ? dateStr : dateStr.replace(" ", "T") + "Z";
+  const utcStr =
+    dateStr.includes("T") || dateStr.endsWith("Z") ? dateStr : dateStr.replace(" ", "T") + "Z";
   const diff = Date.now() - new Date(utcStr).getTime();
   const mins = Math.floor(diff / 60_000);
   if (mins < 1) return "刚刚";

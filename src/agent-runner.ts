@@ -1,10 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
-import { getAnyEmployee, getAllEmployees } from "./employees.js";
 import {
   findGoalTaskByTitle,
+  getDispatchedActiveTasks,
   getEmployeeActiveTasks,
   getEmployeeActivityForActiveGoals,
   getGoalById,
@@ -17,11 +17,10 @@ import {
   updateGoalTask,
   updateGoalTaskStatus,
 } from "./db.js";
+import { getAnyEmployee, getAllEmployees } from "./employees.js";
 
 type RunAgentDeps = {
-  runEmbeddedPiAgent: (
-    params: Record<string, unknown>,
-  ) => Promise<{
+  runEmbeddedPiAgent: (params: Record<string, unknown>) => Promise<{
     payloads?: Array<{ text?: string }>;
     meta?: {
       stopReason?: string;
@@ -35,8 +34,13 @@ const MAX_TOOL_ITERATIONS = 5;
 
 /** Extract provider + model from the user's configured primary model (e.g. "mify/pa/claude-sonnet-4-6"). */
 function resolveAgentModel(config: OpenClawConfig): { provider?: string; model?: string } {
-  const primary = (config as unknown as { agents?: { defaults?: { model?: { primary?: string } } } })
-    ?.agents?.defaults?.model?.primary;
+  const agentsCfg = (config as unknown as { agents?: { defaults?: { model?: unknown } } })?.agents
+    ?.defaults?.model;
+  // Support both string form "provider/model" and object form { primary: "provider/model" }
+  const primary =
+    typeof agentsCfg === "string"
+      ? agentsCfg
+      : (agentsCfg as { primary?: string } | undefined)?.primary;
   if (!primary) return {};
   const slashIdx = primary.indexOf("/");
   if (slashIdx === -1) return { model: primary };
@@ -76,7 +80,10 @@ function applyTaskStatusFromReply(
 ): { doneCount: number; inProgressCount: number } {
   let doneCount = 0;
   let inProgressCount = 0;
-  for (const [tag, status] of [["任务完成", "done"], ["任务进行中", "in_progress"]] as const) {
+  for (const [tag, status] of [
+    ["任务完成", "done"],
+    ["任务进行中", "in_progress"],
+  ] as const) {
     const tagRe = new RegExp(`\\[${tag}[：:](.*?)\\]`, "g");
     let m: RegExpExecArray | null;
     while ((m = tagRe.exec(text)) !== null) {
@@ -128,12 +135,12 @@ export async function runEmployeeAgent(
   if (!employee) throw new Error(`Unknown employee: ${employeeId}`);
 
   const agentDir = join(homedir(), ".openclaw");
-  const workspaceDir = goalId !== undefined
-    ? join(agentDir, "agents", employeeId, `goal-${goalId}`)
-    : join(agentDir, "agents", employeeId);
-  const sessionKey = goalId !== undefined
-    ? `agent:${employeeId}:goal:${goalId}`
-    : `agent:${employeeId}:company`;
+  const workspaceDir =
+    goalId !== undefined
+      ? join(agentDir, "agents", employeeId, `goal-${goalId}`)
+      : join(agentDir, "agents", employeeId);
+  const sessionKey =
+    goalId !== undefined ? `agent:${employeeId}:goal:${goalId}` : `agent:${employeeId}:company`;
   const sessionFile = join(workspaceDir, "sessions.json");
   const scopedGoal = goalId !== undefined ? getGoalById(goalId) : undefined;
 
@@ -225,12 +232,27 @@ ${rawPrompt}`;
           const collabPrompt = `「${sourceName}」请求协作：${task}\n\n请基于你的职能给出具体建议（3-5句）。`;
 
           // 记录协作请求到活动日志
-          insertActivity(targetId, "task_assigned", `[协作请求] ${sourceName} 邀请协作：${task}`, { goalId, requestedBy: employeeId });
+          insertActivity(targetId, "task_assigned", `[协作请求] ${sourceName} 邀请协作：${task}`, {
+            goalId,
+            requestedBy: employeeId,
+          });
 
           try {
-            const collabReply = await runEmployeeAgent(targetId, collabPrompt, deps, undefined, 1, goalId);
+            const collabReply = await runEmployeeAgent(
+              targetId,
+              collabPrompt,
+              deps,
+              undefined,
+              1,
+              goalId,
+            );
             if (collabReply) {
-              insertActivity(targetId, "task_response", `[协作回复] ${targetName}：${collabReply}`, { goalId, requestedBy: employeeId });
+              insertActivity(
+                targetId,
+                "task_response",
+                `[协作回复] ${targetName}：${collabReply}`,
+                { goalId, requestedBy: employeeId },
+              );
               // 将协作回复注入当前员工的下一轮提示
               currentPrompt = `[协作回复] ${targetName} 的回复：\n${collabReply}\n\n请基于以上协作意见继续完成任务。`;
               continue;
@@ -250,11 +272,23 @@ ${rawPrompt}`;
       if (delegateMatch) {
         const toId = delegateMatch[1];
         const message = delegateMatch[2].trim();
+        const dbTask = goalId !== undefined ? getDispatchedActiveTasks(toId, goalId)[0] : undefined;
+        const keyword = dbTask ? dbTask.title.slice(0, 20) : message.slice(0, 20);
+        const taskPrompt = `${message}\n\n任务状态标记（必须输出）：开始执行时输出 [任务进行中: ${keyword}]，全部完成时输出 [任务完成: ${keyword}]。`;
         try {
-          const reply = await runEmployeeAgent(toId, message, deps, undefined, 1, goalId);
+          const reply = await runEmployeeAgent(toId, taskPrompt, deps, undefined, 1, goalId);
           if (reply) {
             insertActivity(toId, "task_response", reply, { delegatedBy: employeeId, goalId });
-            insertActivity(employeeId, "task_response", `已委托 ${toId}：${message}`, { delegateTo: toId, goalId });
+            insertActivity(employeeId, "task_response", `已委托 ${toId}：${message}`, {
+              delegateTo: toId,
+              goalId,
+            });
+            if (goalId !== undefined && reply.includes("[任务完成")) {
+              const dispatched = getDispatchedActiveTasks(toId, goalId);
+              for (const dt of dispatched) updateGoalTaskStatus(dt.id, "done");
+              if (dispatched.length > 0)
+                void dispatchReadyTasksForGoal(goalId, deps).catch(() => void 0);
+            }
           }
         } catch {
           // 目标员工不存在或调用失败时静默忽略，不影响主流程
@@ -278,11 +312,28 @@ ${rawPrompt}`;
           allEmps.find((e) => e.role === targetNameOrId);
         if (targetEmployee) {
           const targetId = targetEmployee.id;
-          insertActivity(targetId, "task_assigned", taskContent, { assignedBy: employeeId, goalId });
+          // Use DB task title as keyword so [任务完成: keyword] can be matched back to the DB task.
+          // Fallback to first 20 chars of dispatch message if no DB task found.
+          const dbTask =
+            goalId !== undefined ? getDispatchedActiveTasks(targetId, goalId)[0] : undefined;
+          const keyword = dbTask ? dbTask.title.slice(0, 20) : taskContent.slice(0, 20);
+          const taskPrompt = `${taskContent}\n\n任务状态标记（必须输出）：开始执行时输出 [任务进行中: ${keyword}]，全部完成时输出 [任务完成: ${keyword}]。`;
+          insertActivity(targetId, "task_assigned", taskContent, {
+            assignedBy: employeeId,
+            goalId,
+          });
           try {
-            const reply = await runEmployeeAgent(targetId, taskContent, deps, undefined, 1, goalId);
+            const reply = await runEmployeeAgent(targetId, taskPrompt, deps, undefined, 1, goalId);
             if (reply) {
               insertActivity(targetId, "task_response", reply, { assignedBy: employeeId, goalId });
+              // Fallback: if keyword mismatch prevented applyTaskStatusFromReply from marking done,
+              // directly mark dispatched-but-not-done tasks as done and trigger next dispatch.
+              if (goalId !== undefined && reply.includes("[任务完成")) {
+                const dispatched = getDispatchedActiveTasks(targetId, goalId);
+                for (const dt of dispatched) updateGoalTaskStatus(dt.id, "done");
+                if (dispatched.length > 0)
+                  void dispatchReadyTasksForGoal(goalId, deps).catch(() => void 0);
+              }
             }
           } catch {
             // 目标员工调用失败时静默忽略，不影响主流程
@@ -293,15 +344,23 @@ ${rawPrompt}`;
     }
 
     // ⑤ Detect <需要决策 options="A|B|C">背景</需要决策> — employee submits multi-option decision request
-    // Only processed at depth=0.
-    if (depth === 0) {
+    // Only processed at depth=0, and only the COO may escalate to CEO.
+    if (depth === 0 && employeeId === "company-coo") {
       const decisionMatch = DECISION_REQUEST_RE.exec(lastText);
       if (decisionMatch) {
-        const options = decisionMatch[1].split("|").map((s) => s.trim()).filter(Boolean);
+        const options = decisionMatch[1]
+          .split("|")
+          .map((s) => s.trim())
+          .filter(Boolean);
         const background = decisionMatch[2].trim();
         if (options.length >= 2) {
           insertPendingDecision(employeeId, background, options[0], options[1], options, goalId);
-          insertActivity(employeeId, "pending_decision", `[待决] ${background}（${options.join(" | ")}）`, { goalId });
+          insertActivity(
+            employeeId,
+            "pending_decision",
+            `[待决] ${background}（${options.join(" | ")}）`,
+            { goalId },
+          );
         }
         break;
       }
@@ -319,10 +378,7 @@ ${rawPrompt}`;
   return lastText;
 }
 
-export async function dispatchReadyTasksForGoal(
-  goalId: number,
-  deps: RunAgentDeps,
-): Promise<void> {
+export async function dispatchReadyTasksForGoal(goalId: number, deps: RunAgentDeps): Promise<void> {
   const goal = getGoalById(goalId);
   if (!goal) return;
   const tasks = getGoalTasks(goalId);
@@ -332,47 +388,82 @@ export async function dispatchReadyTasksForGoal(
   for (const t of tasks) if (t.task_uid) byUid.set(t.task_uid, t);
 
   const ready = tasks
-    .filter((t) => t.status === "pending" && t.dispatched_at == null)
+    // Include both "pending" and "in_progress" that haven't been dispatched yet.
+    // "in_progress" with no dispatch_at means cron/report prematurely advanced the status.
+    .filter((t) => t.status !== "done" && t.dispatched_at == null)
     .filter((t) => {
       const depsUids = parseDependsOn(t);
       if (depsUids.length === 0) return true;
       return depsUids.every((uid) => byUid.get(uid)?.status === "done");
     })
-    .sort((a, b) => (a.sequence - b.sequence) || (a.id - b.id));
+    .sort((a, b) => a.sequence - b.sequence || a.id - b.id);
 
-  // Sequential by default: one active dispatch at a time.
-  const maxParallel = 1;
-  for (const task of ready.slice(0, maxParallel)) {
-    markGoalTaskDispatched(task.id);
-    insertActivity(
-      task.employee_id,
-      "task_assigned",
-      `收到任务：${task.title}（目标：${goal.title}）`,
-      { goalId, taskId: task.id, taskUid: task.task_uid, phase: "dispatched" },
-    );
-    try {
-      const prompt = `CEO 下发了目标内任务，请直接产出首版可交付物。
+  // Sequential by default: one active dispatch at a time. Route through COO.
+  const toDispatch = ready.slice(0, 1);
+  if (toDispatch.length === 0) return;
 
-目标：${goal.title}${goal.description ? `\n目标描述：${goal.description}` : ""}
+  const task = toDispatch[0];
+  // Mark dispatched first (idempotency guard — prevents re-dispatch if COO is slow)
+  markGoalTaskDispatched(task.id);
+
+  const allTaskLines = tasks
+    .map((t, i) => {
+      const s = t.status === "done" ? "✅" : t.dispatched_at ? "⏳" : "⬜";
+      return `${s} [${t.task_uid ?? `T${i + 1}`}] ${t.title}（${t.employee_id}）`;
+    })
+    .join("\n");
+
+  const cooPrompt = `目标「${goal.title}」任务推进：以下任务的依赖已完成，请你立即分配执行：
+
+任务：${task.title}
+负责人：${task.employee_id}
+${task.deliverable ? `可交付物：${task.deliverable}` : ""}
+${task.done_definition ? `完成标准：${task.done_definition}` : ""}
+
+目标整体进度：
+${allTaskLines}
+
+请现在输出 <分配任务给:${task.employee_id}>任务具体要求</分配任务给>，启动这个任务。`;
+
+  try {
+    if (task.employee_id === "company-coo") {
+      // COO is the executor — run directly instead of self-dispatching through the tag loop
+      const keyword = task.title.slice(0, 20);
+      const cooExecPrompt = `目标「${goal.title}」指定由你直接执行以下任务：
+
 任务：${task.title}
 ${task.deliverable ? `可交付物：${task.deliverable}` : ""}
 ${task.done_definition ? `完成标准：${task.done_definition}` : ""}
 
-要求：
-1. 直接给出可交付内容，不要只说“我会做”
-2. 若有阻塞，使用 [待决] 背景: ... | 选A: ... | 选B: ...
-3. 已启动请加 [任务进行中: ${task.title.slice(0, 12)}]
-4. 全部完成请加 [任务完成: ${task.title.slice(0, 12)}]`;
-      const reply = await runEmployeeAgent(task.employee_id, prompt, deps, undefined, 0, goalId);
+目标整体进度：
+${allTaskLines}
+
+请直接产出可交付物。完成后输出 [任务完成: ${keyword}]。`;
+      const reply = await runEmployeeAgent(
+        "company-coo",
+        cooExecPrompt,
+        deps,
+        undefined,
+        0,
+        goalId,
+      );
       if (reply) {
-        insertActivity(task.employee_id, "task_response", reply, { goalId, taskId: task.id, taskUid: task.task_uid });
-        try { updateGoalTaskStatus(task.id, "in_progress"); } catch { /* non-fatal */ }
-        scheduleFollowUp(task.employee_id, deps, 60 * 1000, 1, goalId);
+        insertActivity("company-coo", "task_response", reply, { goalId, taskId: task.id });
       }
-    } catch {
-      // Expose failure by reopening task for manual retry.
-      updateGoalTask(task.id, { status: "pending" });
+    } else {
+      const reply = await runEmployeeAgent("company-coo", cooPrompt, deps, undefined, 0, goalId);
+      if (reply) {
+        insertActivity(
+          "company-coo",
+          "task_assigned",
+          `[COO分配] ${task.title} → ${task.employee_id}`,
+          { goalId, taskId: task.id },
+        );
+      }
     }
+  } catch {
+    // COO failed — reopen task so it can be retried
+    updateGoalTask(task.id, { status: "pending" });
   }
 }
 
@@ -380,10 +471,7 @@ ${task.done_definition ? `完成标准：${task.done_definition}` : ""}
  * Run a cron-triggered proactive report for an employee.
  * The result is saved to the reports table.
  */
-export async function runEmployeeCron(
-  employeeId: string,
-  deps: RunAgentDeps,
-): Promise<void> {
+export async function runEmployeeCron(employeeId: string, deps: RunAgentDeps): Promise<void> {
   const employee = getAnyEmployee(employeeId);
   if (!employee) return;
 
@@ -458,7 +546,7 @@ export function scheduleFollowUp(
 规则：
 - 直接给出内容（文档草稿/分析/方案/列表/代码片段），不要说"我正在..."
 - 如果上一步已产出初稿，现在细化或推进下一步
-- 遇到需要 CEO 拍板的节点：[待决] 背景: ... | 选A: ... | 选B: ...
+- 遇到阻塞或资源冲突，向 Jordan（COO，company-coo）反映，不要自行上报 CEO
 - 完成全部任务时加 [任务完成: 关键词]
 - 仍在推进时加 [任务进行中: 关键词]`;
 
@@ -489,10 +577,9 @@ export async function decomposeGoal(
   description: string,
   deps: RunAgentDeps,
 ): Promise<void> {
-  const employees = getAllEmployees();
-  const employeeList = employees.map(
-    (e) => `- ${e.role} (${e.name}, id=${e.id})`,
-  ).join("\n");
+  // COO is the dispatcher/coordinator — never assign tasks to COO itself
+  const employees = getAllEmployees().filter((e) => e.id !== "company-coo");
+  const employeeList = employees.map((e) => `- ${e.role} (${e.name}, id=${e.id})`).join("\n");
 
   const decompositionPrompt = `你是公司的 AI 目标分解助手。
 CEO 设置了以下季度目标：
@@ -502,7 +589,7 @@ ${description ? `描述：${description}` : ""}
 员工列表：
 ${employeeList}
 
-请将这个目标分解为“有依赖关系”的执行计划，要求：
+请将这个目标分解为"有依赖关系"的执行计划，要求：
 1. 每条任务必须可验证，不要泛泛描述
 2. 明确依赖：后续任务必须依赖前置任务（不要所有任务都并行）
 3. 默认串行推进：尽量只有第一个任务无依赖，其他任务依赖前序任务
@@ -597,7 +684,7 @@ ${employeeList}
   const knownUidSet = new Set(uidList);
   const badDeps: string[] = [];
   for (const task of parsed.tasks ?? []) {
-    for (const dep of (task.depends_on ?? [])) {
+    for (const dep of task.depends_on ?? []) {
       if (!knownUidSet.has(dep)) badDeps.push(`${task.uid}->${dep}`);
       if (dep === task.uid) badDeps.push(`${task.uid}->${dep}(self)`);
     }
@@ -640,8 +727,26 @@ ${employeeList}
     });
   }
 
-  // Start execution by dispatching the first ready tasks (sequential mode by default).
-  await dispatchReadyTasksForGoal(goalId, deps);
+  // Brief COO with the full plan — COO dispatches the first task and owns execution from here.
+  const allTasks = getGoalTasks(goalId);
+  const taskPlan = allTasks
+    .map((t, i) => {
+      const taskDeps = parseDependsOn(t);
+      return `[${t.task_uid ?? `T${i + 1}`}] ${t.title}\n  负责人：${t.employee_id}\n  依赖：${taskDeps.length ? taskDeps.join(", ") : "无"}\n  可交付：${t.deliverable ?? "提交可评审产出"}`;
+    })
+    .join("\n\n");
+  const firstTask = allTasks[0];
+  const cooKickoffPrompt = `CEO 刚设置了新目标「${title}」${description ? `\n描述：${description}` : ""}
+
+我已为你生成完整执行计划（共 ${allTasks.length} 个任务，串行依赖）：
+
+${taskPlan}
+
+当前「${firstTask.title}」无依赖，可以立即执行，负责人是 ${firstTask.employee_id}。
+
+请用 <分配任务给:${firstTask.employee_id}>任务具体要求</分配任务给> 启动第一个任务。`;
+
+  await runEmployeeAgent("company-coo", cooKickoffPrompt, deps, undefined, 0, goalId);
 }
 
 /**
@@ -653,7 +758,9 @@ export async function generateEmployeeFromDescription(
   deps: RunAgentDeps,
 ): Promise<Record<string, string>> {
   const currentEmployees = getAllEmployees();
-  const employeeList = currentEmployees.map((e) => `- ${e.role} (${e.name}, id=${e.id})`).join("\n");
+  const employeeList = currentEmployees
+    .map((e) => `- ${e.role} (${e.name}, id=${e.id})`)
+    .join("\n");
   const existingNames = currentEmployees.map((e) => e.name).join("、");
   const existingIds = currentEmployees.map((e) => e.id).join("、");
   const agentDir = join(homedir(), ".openclaw");

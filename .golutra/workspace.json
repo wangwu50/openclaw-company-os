@@ -11,9 +11,7 @@
           "zh": "完成supervisor的要求，[[cmd key=\"use_roadmap_skill\"]] 查看未完成任务，指挥工作频道全部空闲的member继续完成；若已完成，仅允许向supervisor汇报。[[cmd key=\"use_chat_mcp\"]]。"
         },
         "senderMemberIds": [],
-        "senderRoles": [
-          "supervisor"
-        ],
+        "senderRoles": ["supervisor"],
         "skillPaths": []
       },
       {
@@ -26,9 +24,7 @@
           "zh": "完成owner的要求，[[cmd key=\"use_roadmap_skill\"]] 查看未完成任务，指挥工作频道全部空闲的member继续完成；若已完成，仅允许向owner汇报。[[cmd key=\"use_chat_mcp\"]]。"
         },
         "senderMemberIds": [],
-        "senderRoles": [
-          "owner"
-        ],
+        "senderRoles": ["owner"],
         "skillPaths": []
       },
       {
@@ -41,9 +37,7 @@
           "zh": "完成admin的要求，[[cmd key=\"use_roadmap_skill\"]] 查看未完成任务，指挥工作频道全部空闲的member继续完成；若已完成，仅允许向admin汇报。[[cmd key=\"use_chat_mcp\"]]。"
         },
         "senderMemberIds": [],
-        "senderRoles": [
-          "admin"
-        ],
+        "senderRoles": ["admin"],
         "skillPaths": []
       },
       {
@@ -56,9 +50,7 @@
           "zh": "完成assistant的要求，[[cmd key=\"use_roadmap_skill\"]] 查看未完成任务，指挥工作频道全部空闲的member继续完成；若已完成，仅允许向assistant汇报。[[cmd key=\"use_chat_mcp\"]]。"
         },
         "senderMemberIds": [],
-        "senderRoles": [
-          "assistant"
-        ],
+        "senderRoles": ["assistant"],
         "skillPaths": []
       },
       {
@@ -71,9 +63,7 @@
           "zh": "先审核当前任务完成情况；若未完成，[[cmd key=\"use_roadmap_skill\"]] 查看未完成任务，指挥当前汇报的member继续完成；若已完成，仅允许向supervisor或者owner汇报。[[cmd key=\"use_chat_mcp\"]]。"
         },
         "senderMemberIds": [],
-        "senderRoles": [
-          "member"
-        ],
+        "senderRoles": ["member"],
         "skillPaths": []
       }
     ],
@@ -88,13 +78,7 @@
           "zh": "[[cmd key=\"use_chat_skill\"]]。"
         },
         "senderMemberIds": [],
-        "senderRoles": [
-          "owner",
-          "admin",
-          "assistant",
-          "supervisor",
-          "member"
-        ],
+        "senderRoles": ["owner", "admin", "assistant", "supervisor", "member"],
         "skillPaths": []
       }
     ],
@@ -109,9 +93,7 @@
           "zh": "完成owner的要求，[[cmd key=\"use_roadmap_skill\"]] 查看未完成任务，优先指挥全部空闲的assistant完成任务，若当前频道没有assistant，指挥全部空闲的member完成任务；若已完成，仅允许向owner汇报。[[cmd key=\"use_chat_skill\"]]。"
         },
         "senderMemberIds": [],
-        "senderRoles": [
-          "owner"
-        ],
+        "senderRoles": ["owner"],
         "skillPaths": []
       },
       {
@@ -124,9 +106,7 @@
           "zh": "完成admin的要求，[[cmd key=\"use_roadmap_skill\"]] 查看未完成任务，优先指挥全部空闲的assistant完成任务，若当前频道没有assistant，指挥全部空闲的member完成任务；若已完成，仅允许向admin汇报。[[cmd key=\"use_chat_skill\"]]。"
         },
         "senderMemberIds": [],
-        "senderRoles": [
-          "admin"
-        ],
+        "senderRoles": ["admin"],
         "skillPaths": []
       },
       {
@@ -139,9 +119,7 @@
           "zh": "协调supervisor的要求，[[cmd key=\"use_roadmap_skill\"]] 查看未完成任务，优先指挥全部空闲的assistant完成任务，若当前频道没有assistant，指挥全部空闲的member完成任务；若已完成，仅允许向owner汇报。[[cmd key=\"use_chat_skill\"]]。"
         },
         "senderMemberIds": [],
-        "senderRoles": [
-          "supervisor"
-        ],
+        "senderRoles": ["supervisor"],
         "skillPaths": []
       },
       {
@@ -154,9 +132,7 @@
           "zh": "先审核当前任务完成情况；若未完成，[[cmd key=\"use_roadmap_skill\"]] 查看未完成任务，指导assistant继续完成；若已完成，仅允许向owner汇报。[[cmd key=\"use_chat_skill\"]]。"
         },
         "senderMemberIds": [],
-        "senderRoles": [
-          "assistant"
-        ],
+        "senderRoles": ["assistant"],
         "skillPaths": []
       },
       {
@@ -169,9 +145,7 @@
           "zh": "先审核当前任务完成情况；若未完成，[[cmd key=\"use_roadmap_skill\"]] 查看未完成任务，指导空闲的member继续完成；若已完成，仅允许向owner汇报。[[cmd key=\"use_chat_skill\"]]。"
         },
         "senderMemberIds": [],
-        "senderRoles": [
-          "member"
-        ],
+        "senderRoles": ["member"],
         "skillPaths": []
       }
     ]

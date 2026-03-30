@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
-import type { HallData, PendingDecision } from "../types.js";
 import { reDecomposeGoal, sendDecision, useActivity } from "../hooks/useApi.js";
+import type { HallData, PendingDecision } from "../types.js";
 
 type GoalWorkspaceProps = {
   data: HallData;
@@ -42,16 +42,15 @@ export function GoalWorkspace({ data, onRefresh }: GoalWorkspaceProps) {
   const activity = useActivity(4_000, scopedGoalId);
   const [rebuilding, setRebuilding] = useState(false);
 
-  const goals = scopedGoalId === undefined
-    ? data.goals
-    : data.goals.filter((g) => g.id === scopedGoalId);
-  const pending = scopedGoalId === undefined
-    ? data.pending
-    : data.pending.filter((p) => p.goal_id === scopedGoalId);
+  const goals =
+    scopedGoalId === undefined ? data.goals : data.goals.filter((g) => g.id === scopedGoalId);
+  const pending =
+    scopedGoalId === undefined
+      ? data.pending
+      : data.pending.filter((p) => p.goal_id === scopedGoalId);
 
-  const selectedGoal = scopedGoalId === undefined
-    ? null
-    : data.goals.find((g) => g.id === scopedGoalId) ?? null;
+  const selectedGoal =
+    scopedGoalId === undefined ? null : (data.goals.find((g) => g.id === scopedGoalId) ?? null);
 
   const tasksByEmployee = useMemo(() => {
     const map = new Map<string, Array<(typeof goals)[number]["tasks"][number]>>();
@@ -90,7 +89,15 @@ export function GoalWorkspace({ data, onRefresh }: GoalWorkspaceProps) {
         minWidth: 0,
       }}
     >
-      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--space-3)", flexWrap: "wrap" }}>
+      <header
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "var(--space-3)",
+          flexWrap: "wrap",
+        }}
+      >
         <div>
           <h1 style={{ fontSize: "var(--text-xl)", fontWeight: 700 }}>目标工作台</h1>
           <p style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", marginTop: 4 }}>
@@ -151,8 +158,17 @@ export function GoalWorkspace({ data, onRefresh }: GoalWorkspaceProps) {
             color: "var(--text-primary)",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", flexWrap: "wrap" }}>
-            <span>当前目标：#{selectedGoal.id} {selectedGoal.title}</span>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "var(--space-2)",
+              flexWrap: "wrap",
+            }}
+          >
+            <span>
+              当前目标：#{selectedGoal.id} {selectedGoal.title}
+            </span>
             <button
               onClick={() => {
                 setRebuilding(true);
@@ -179,12 +195,20 @@ export function GoalWorkspace({ data, onRefresh }: GoalWorkspaceProps) {
       )}
 
       <section aria-label="待决事项">
-        <h2 style={{ fontSize: "var(--text-base)", fontWeight: 700, marginBottom: "var(--space-2)" }}>
+        <h2
+          style={{ fontSize: "var(--text-base)", fontWeight: 700, marginBottom: "var(--space-2)" }}
+        >
           待决事项（已隔离）
         </h2>
         <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
           {pending.length === 0 && (
-            <Empty text={scopedGoalId === undefined ? "当前没有待决事项" : `目标 #${scopedGoalId} 当前没有待决事项`} />
+            <Empty
+              text={
+                scopedGoalId === undefined
+                  ? "当前没有待决事项"
+                  : `目标 #${scopedGoalId} 当前没有待决事项`
+              }
+            />
           )}
           {pending.map((p) => (
             <PendingCard key={p.id} pending={p} employees={data.employees} onRefresh={onRefresh} />
@@ -209,26 +233,53 @@ export function GoalWorkspace({ data, onRefresh }: GoalWorkspaceProps) {
             padding: "var(--space-4)",
           }}
         >
-          <h3 style={{ fontSize: "var(--text-sm)", fontWeight: 700, marginBottom: "var(--space-3)" }}>
+          <h3
+            style={{ fontSize: "var(--text-sm)", fontWeight: 700, marginBottom: "var(--space-3)" }}
+          >
             任务看板（按员工）
           </h3>
           {data.employees.map((emp) => {
             const tasks = tasksByEmployee.get(emp.id) ?? [];
             if (tasks.length === 0) return null;
             return (
-              <div key={emp.id} style={{ borderTop: "1px solid var(--border)", padding: "var(--space-3) 0" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", marginBottom: "var(--space-2)" }}>
+              <div
+                key={emp.id}
+                style={{ borderTop: "1px solid var(--border)", padding: "var(--space-3) 0" }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "var(--space-2)",
+                    marginBottom: "var(--space-2)",
+                  }}
+                >
                   <span>{emp.emoji}</span>
-                  <span style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)", fontWeight: 600 }}>
+                  <span
+                    style={{
+                      fontSize: "var(--text-sm)",
+                      color: "var(--text-primary)",
+                      fontWeight: 600,
+                    }}
+                  >
                     {emp.name}（{emp.role}）
                   </span>
-                  <span style={{ marginLeft: "auto", fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
+                  <span
+                    style={{
+                      marginLeft: "auto",
+                      fontSize: "var(--text-xs)",
+                      color: "var(--text-muted)",
+                    }}
+                  >
                     {tasks.filter((t) => t.status === "done").length}/{tasks.length} 完成
                   </span>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   {tasks.map((t) => (
-                    <div key={t.id} style={{ display: "flex", alignItems: "flex-start", gap: "var(--space-2)" }}>
+                    <div
+                      key={t.id}
+                      style={{ display: "flex", alignItems: "flex-start", gap: "var(--space-2)" }}
+                    >
                       <span
                         style={{
                           width: 6,
@@ -252,7 +303,13 @@ export function GoalWorkspace({ data, onRefresh }: GoalWorkspaceProps) {
             );
           })}
           {goals.flatMap((g) => g.tasks).length === 0 && (
-            <Empty text={scopedGoalId === undefined ? "当前范围下没有任务" : `目标 #${scopedGoalId} 还没有任务`} />
+            <Empty
+              text={
+                scopedGoalId === undefined
+                  ? "当前范围下没有任务"
+                  : `目标 #${scopedGoalId} 还没有任务`
+              }
+            />
           )}
         </div>
 
@@ -264,28 +321,46 @@ export function GoalWorkspace({ data, onRefresh }: GoalWorkspaceProps) {
             padding: "var(--space-4)",
           }}
         >
-          <h3 style={{ fontSize: "var(--text-sm)", fontWeight: 700, marginBottom: "var(--space-3)" }}>
+          <h3
+            style={{ fontSize: "var(--text-sm)", fontWeight: 700, marginBottom: "var(--space-3)" }}
+          >
             实时动态（已隔离）
           </h3>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {activity.length === 0 && (
-              <Empty text={scopedGoalId === undefined ? "暂无动态" : `目标 #${scopedGoalId} 暂无动态`} />
+              <Empty
+                text={scopedGoalId === undefined ? "暂无动态" : `目标 #${scopedGoalId} 暂无动态`}
+              />
             )}
             {activity.map((evt) => {
               const emp = data.employees.find((e) => e.id === evt.employee_id);
               return (
-                <div key={evt.id} style={{ borderTop: "1px solid var(--border)", paddingTop: "var(--space-2)" }}>
+                <div
+                  key={evt.id}
+                  style={{ borderTop: "1px solid var(--border)", paddingTop: "var(--space-2)" }}
+                >
                   <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
                     <span style={{ fontSize: 12 }}>{EVENT_ICONS[evt.event_type] ?? "•"}</span>
                     <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>
                       {EVENT_LABELS[evt.event_type] ?? evt.event_type}
                     </span>
-                    <span style={{ fontSize: "10px", color: "var(--text-muted)", marginLeft: "auto" }}>
+                    <span
+                      style={{ fontSize: "10px", color: "var(--text-muted)", marginLeft: "auto" }}
+                    >
                       {formatTimeAgo(evt.created_at)}
                     </span>
                   </div>
-                  <div style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)", marginTop: 4, lineHeight: 1.5 }}>
-                    <strong style={{ color: "var(--text-primary)" }}>{emp ? `${emp.emoji} ${emp.name}` : evt.employee_id}</strong>
+                  <div
+                    style={{
+                      fontSize: "var(--text-xs)",
+                      color: "var(--text-secondary)",
+                      marginTop: 4,
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    <strong style={{ color: "var(--text-primary)" }}>
+                      {emp ? `${emp.emoji} ${emp.name}` : evt.employee_id}
+                    </strong>
                     <span>：{evt.content}</span>
                   </div>
                 </div>
@@ -298,7 +373,15 @@ export function GoalWorkspace({ data, onRefresh }: GoalWorkspaceProps) {
   );
 }
 
-function MetricCard({ label, value, highlight = false }: { label: string; value: string; highlight?: boolean }) {
+function MetricCard({
+  label,
+  value,
+  highlight = false,
+}: {
+  label: string;
+  value: string;
+  highlight?: boolean;
+}) {
   return (
     <div
       style={{
@@ -309,7 +392,13 @@ function MetricCard({ label, value, highlight = false }: { label: string; value:
       }}
     >
       <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>{label}</div>
-      <div style={{ fontSize: "var(--text-xl)", fontWeight: 700, color: highlight ? "var(--accent-urgent)" : "var(--text-primary)" }}>
+      <div
+        style={{
+          fontSize: "var(--text-xl)",
+          fontWeight: 700,
+          color: highlight ? "var(--accent-urgent)" : "var(--text-primary)",
+        }}
+      >
         {value}
       </div>
     </div>
@@ -379,40 +468,67 @@ function PendingCard({
         opacity: submitting ? 0.6 : 1,
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "var(--space-2)", marginBottom: "var(--space-2)" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: "var(--space-2)",
+          marginBottom: "var(--space-2)",
+        }}
+      >
         <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
           {emp ? `${emp.emoji} ${emp.name}（${emp.role}）` : pending.employee_id}
-          {pending.goal_id !== null && <span style={{ marginLeft: 8 }}>目标 #{pending.goal_id}</span>}
+          {pending.goal_id !== null && (
+            <span style={{ marginLeft: 8 }}>目标 #{pending.goal_id}</span>
+          )}
         </div>
-        <div style={{ fontSize: "10px", color: "var(--text-muted)" }}>{formatTimeAgo(pending.created_at)}</div>
+        <div style={{ fontSize: "10px", color: "var(--text-muted)" }}>
+          {formatTimeAgo(pending.created_at)}
+        </div>
       </div>
-      <p style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)", lineHeight: 1.6, marginBottom: "var(--space-2)" }}>
+      <p
+        style={{
+          fontSize: "var(--text-sm)",
+          color: "var(--text-primary)",
+          lineHeight: 1.6,
+          marginBottom: "var(--space-2)",
+        }}
+      >
         {pending.background}
       </p>
       <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
-        {parsedOptions
-          ? parsedOptions.map((opt, i) => (
+        {parsedOptions ? (
+          parsedOptions.map((opt, i) => (
+            <button
+              key={i}
+              onClick={() => void handle(String(i + 1), opt)}
+              disabled={submitting}
+              style={decisionBtn(i === 0)}
+            >
+              {opt}
+            </button>
+          ))
+        ) : (
+          <>
+            <button
+              onClick={() => void handle("A", pending.option_a)}
+              disabled={submitting}
+              style={decisionBtn(true)}
+            >
+              走 A：{pending.option_a}
+            </button>
+            {pending.option_b && (
               <button
-                key={i}
-                onClick={() => void handle(String(i + 1), opt)}
+                onClick={() => void handle("B", pending.option_b!)}
                 disabled={submitting}
-                style={decisionBtn(i === 0)}
+                style={decisionBtn(false)}
               >
-                {opt}
+                走 B：{pending.option_b}
               </button>
-            ))
-          : (
-            <>
-              <button onClick={() => void handle("A", pending.option_a)} disabled={submitting} style={decisionBtn(true)}>
-                走 A：{pending.option_a}
-              </button>
-              {pending.option_b && (
-                <button onClick={() => void handle("B", pending.option_b!)} disabled={submitting} style={decisionBtn(false)}>
-                  走 B：{pending.option_b}
-                </button>
-              )}
-            </>
-          )}
+            )}
+          </>
+        )}
       </div>
     </div>
   );
@@ -431,7 +547,8 @@ function decisionBtn(primary: boolean): CSSProperties {
 }
 
 function formatTimeAgo(dateStr: string): string {
-  const utcStr = dateStr.includes("T") || dateStr.endsWith("Z") ? dateStr : `${dateStr.replace(" ", "T")}Z`;
+  const utcStr =
+    dateStr.includes("T") || dateStr.endsWith("Z") ? dateStr : `${dateStr.replace(" ", "T")}Z`;
   const diff = Date.now() - new Date(utcStr).getTime();
   const mins = Math.floor(diff / 60_000);
   if (mins < 1) return "刚刚";

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
-import type { Employee } from "../types.js";
 import { generateEmployee, createEmployee, deleteEmployee } from "../hooks/useApi.js";
+import type { Employee } from "../types.js";
 
 type GeneratedEmployee = Employee & {
   systemPrompt?: string;
@@ -32,7 +32,8 @@ const ROLE_TEMPLATES: RoleTemplate[] = [
     role: "产品经理",
     systemPrompt: `你是 Alex，公司的产品经理（PM）。\n你负责：收集用户反馈、整理功能需求、拆分故事、确定优先级、协调产品路线图。\n工作方式：\n- 主动汇报：每天整理当前最重要的 3 件产品事项，以日报形式提交给 CEO。\n- 决策请求：当遇到优先级决策时，向 CEO 发起待决请求，提供背景 + A/B 选项。\n- 执行指令：CEO 下达指令后，将其分解为具体 story，并分配给工程团队。\n沟通风格：简洁、逻辑清晰，用数据说话，回复控制在 3-5 句话以内。\n协作工具：当需要同事参与时，在回复中加 <触发协作 to="EMPLOYEE_ID" task="简要任务描述"/> 标签（最多触发一次），系统会自动通知该同事并将回复反馈给你。可用同事 ID：company-pm / company-eng / company-ops / company-mkt / company-fin / company-coo。`,
     cronSchedule: "0 9 * * 1-5",
-    cronPrompt: "写一份进展汇报：当前最重要的 3 件产品事项，每条不超过 2 句话。用中文。以 [进展汇报] 开头。",
+    cronPrompt:
+      "写一份进展汇报：当前最重要的 3 件产品事项，每条不超过 2 句话。用中文。以 [进展汇报] 开头。",
   },
   {
     label: "工程",
@@ -42,7 +43,8 @@ const ROLE_TEMPLATES: RoleTemplate[] = [
     role: "工程",
     systemPrompt: `你是 Sam，公司的工程负责人。\n你负责：技术架构、功能开发、代码质量、CI/CD、技术债务管理。\n工作方式：\n- 主动汇报：每天汇报工程进展（PR 合并、bug 修复、技术风险）。\n- 决策请求：技术选型、架构决策、资源分配需要 CEO 输入时，发起待决请求。\n- 执行指令：CEO 指令拆分为技术任务后，估算工期并开始执行。\n沟通风格：技术术语适度，对 CEO 用非技术语言解释，简洁直接。\n协作工具：当需要同事参与时，在回复中加 <触发协作 to="EMPLOYEE_ID" task="简要任务描述"/> 标签（最多触发一次），系统会自动通知该同事并将回复反馈给你。可用同事 ID：company-pm / company-eng / company-ops / company-mkt / company-fin / company-coo。`,
     cronSchedule: "0 10 * * 1-5",
-    cronPrompt: "写一份进展汇报：昨日完成的任务、今日计划、当前阻塞项（如有）。用中文。以 [进展汇报] 开头。",
+    cronPrompt:
+      "写一份进展汇报：昨日完成的任务、今日计划、当前阻塞项（如有）。用中文。以 [进展汇报] 开头。",
   },
   {
     label: "运营",
@@ -52,7 +54,8 @@ const ROLE_TEMPLATES: RoleTemplate[] = [
     role: "运营",
     systemPrompt: `你是 Maya，公司的运营负责人。\n你负责：用户增长、推广活动、渠道运营、数据分析、KPI 追踪。\n工作方式：\n- 主动汇报：每天汇报关键运营指标（DAU、转化率、推广效果）。\n- 决策请求：推广预算申请、渠道投放策略需要 CEO 审批时，发起待决请求。\n- 执行指令：执行 CEO 批准的推广计划，并跟踪效果反馈。\n沟通风格：数据导向，直接给出结论，避免废话。\n协作工具：当需要同事参与时，在回复中加 <触发协作 to="EMPLOYEE_ID" task="简要任务描述"/> 标签（最多触发一次），系统会自动通知该同事并将回复反馈给你。可用同事 ID：company-pm / company-eng / company-ops / company-mkt / company-fin / company-coo。`,
     cronSchedule: "0 11 * * 1-5",
-    cronPrompt: "写一份进展汇报：核心指标概览（DAU/新增/转化）、今日重点工作、数据异常（如有）。用中文。以 [进展汇报] 开头。",
+    cronPrompt:
+      "写一份进展汇报：核心指标概览（DAU/新增/转化）、今日重点工作、数据异常（如有）。用中文。以 [进展汇报] 开头。",
   },
   {
     label: "市场",
@@ -62,7 +65,8 @@ const ROLE_TEMPLATES: RoleTemplate[] = [
     role: "市场",
     systemPrompt: `你是 Leo，公司的市场负责人。\n你负责：品牌建设、内容营销、社交媒体、竞品分析、PR/媒体关系。\n工作方式：\n- 主动汇报：每天汇报市场动态、内容发布情况、竞品新消息。\n- 决策请求：重大内容方向、品牌决策需要 CEO 审批时，发起待决请求。\n- 执行指令：执行 CEO 确认的营销策略，并反馈效果。\n沟通风格：有创意感但不失重点，简洁，善用类比。\n协作工具：当需要同事参与时，在回复中加 <触发协作 to="EMPLOYEE_ID" task="简要任务描述"/> 标签（最多触发一次），系统会自动通知该同事并将回复反馈给你。可用同事 ID：company-pm / company-eng / company-ops / company-mkt / company-fin / company-coo。`,
     cronSchedule: "0 14 * * 1-5",
-    cronPrompt: "写一份进展汇报：竞品新动态（如有）、内容发布状态、下一步市场计划。用中文。以 [进展汇报] 开头。",
+    cronPrompt:
+      "写一份进展汇报：竞品新动态（如有）、内容发布状态、下一步市场计划。用中文。以 [进展汇报] 开头。",
   },
   {
     label: "财务",
@@ -72,7 +76,8 @@ const ROLE_TEMPLATES: RoleTemplate[] = [
     role: "财务",
     systemPrompt: `你是 Chris，公司的财务负责人。\n你负责：预算管理、成本控制、财务预测、API 成本追踪、支出审批。\n工作方式：\n- 主动汇报：每周汇报支出概览和 runway（每周一）。\n- 决策请求：超出预算的支出申请需要 CEO 批准，发起待决请求。\n- 执行指令：执行 CEO 批准的预算调整。\n沟通风格：数字精确，控制在 3 句话内，附上具体金额。\n协作工具：当需要同事参与时，在回复中加 <触发协作 to="EMPLOYEE_ID" task="简要任务描述"/> 标签（最多触发一次），系统会自动通知该同事并将回复反馈给你。可用同事 ID：company-pm / company-eng / company-ops / company-mkt / company-fin / company-coo。`,
     cronSchedule: "0 9 * * 1",
-    cronPrompt: "写一份进展汇报：本周总支出、当前 runway 估算、需要注意的成本异常。用中文。以 [进展汇报] 开头。",
+    cronPrompt:
+      "写一份进展汇报：本周总支出、当前 runway 估算、需要注意的成本异常。用中文。以 [进展汇报] 开头。",
   },
   {
     label: "COO/总监",
@@ -126,12 +131,7 @@ export function Sidebar({ employees, pendingCount, onEmployeeChange }: SidebarPr
 
         {/* Main nav */}
         {NAV_ITEMS.map(({ to, icon, label, exact }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={exact}
-            style={({ isActive }) => navItemStyle(isActive)}
-          >
+          <NavLink key={to} to={to} end={exact} style={({ isActive }) => navItemStyle(isActive)}>
             <span style={{ fontSize: "16px" }}>{icon}</span>
             <span style={{ flex: 1 }}>{label}</span>
             {label === "大厅" && pendingCount > 0 && (
@@ -223,8 +223,15 @@ export function Sidebar({ employees, pendingCount, onEmployeeChange }: SidebarPr
                   opacity: 0.6,
                   lineHeight: 1,
                 }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.opacity = "1"; (e.currentTarget as HTMLButtonElement).style.color = "var(--accent-error, #e05c5c)"; }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.opacity = "0.6"; (e.currentTarget as HTMLButtonElement).style.color = "var(--text-muted)"; }}
+                onMouseEnter={(e) => {
+                  (e.currentTarget as HTMLButtonElement).style.opacity = "1";
+                  (e.currentTarget as HTMLButtonElement).style.color =
+                    "var(--accent-error, #e05c5c)";
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLButtonElement).style.opacity = "0.6";
+                  (e.currentTarget as HTMLButtonElement).style.color = "var(--text-muted)";
+                }}
               >
                 🗑️
               </button>
@@ -278,8 +285,12 @@ function AddEmployeeModal({ onClose, onCreated }: AddEmployeeModalProps) {
     setSaving(true);
     setError(null);
     try {
-      const idToUse = generated.id ||
-        `company-${generated.role.replace(/[^a-z0-9]/gi, "").toLowerCase().slice(0, 10)}-${Date.now().toString(36)}`;
+      const idToUse =
+        generated.id ||
+        `company-${generated.role
+          .replace(/[^a-z0-9]/gi, "")
+          .toLowerCase()
+          .slice(0, 10)}-${Date.now().toString(36)}`;
       await createEmployee({ ...generated, id: idToUse } as Employee & {
         systemPrompt?: string;
         cronSchedule?: string;
@@ -318,7 +329,9 @@ function AddEmployeeModal({ onClose, onCreated }: AddEmployeeModalProps) {
           gap: "var(--space-4)",
         }}
       >
-        <div style={{ fontSize: "var(--text-base)", fontWeight: 600, color: "var(--text-primary)" }}>
+        <div
+          style={{ fontSize: "var(--text-base)", fontWeight: 600, color: "var(--text-primary)" }}
+        >
           ✨ 添加自定义员工
         </div>
 
@@ -417,13 +430,21 @@ function AddEmployeeModal({ onClose, onCreated }: AddEmployeeModalProps) {
               gap: "var(--space-3)",
             }}
           >
-            <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", marginBottom: 2 }}>
+            <div
+              style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", marginBottom: 2 }}
+            >
               预览
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
               <span style={{ fontSize: "28px" }}>{generated.emoji}</span>
               <div>
-                <div style={{ fontSize: "var(--text-base)", fontWeight: 600, color: "var(--text-primary)" }}>
+                <div
+                  style={{
+                    fontSize: "var(--text-base)",
+                    fontWeight: 600,
+                    color: "var(--text-primary)",
+                  }}
+                >
                   {generated.name}
                 </div>
                 <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
@@ -446,7 +467,13 @@ function AddEmployeeModal({ onClose, onCreated }: AddEmployeeModalProps) {
               </div>
             </div>
             {generated.systemPrompt && (
-              <div style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)", lineHeight: 1.6 }}>
+              <div
+                style={{
+                  fontSize: "var(--text-xs)",
+                  color: "var(--text-secondary)",
+                  lineHeight: 1.6,
+                }}
+              >
                 {generated.systemPrompt}
               </div>
             )}

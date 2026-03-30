@@ -1,8 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import type { ActivityEvent, EmployeeReport, HallData, PendingDecision } from "../types.js";
-import { sendDecision, setGoal, updateGoal, deleteGoal, updateTask, useActivity, fetchReports } from "../hooks/useApi.js";
+import { Md } from "../components/Markdown.js";
+import {
+  clearAllSessions,
+  resetAll,
+  sendDecision,
+  setGoal,
+  updateGoal,
+  deleteGoal,
+  updateTask,
+  useActivity,
+  fetchReports,
+} from "../hooks/useApi.js";
 import { useNotification } from "../hooks/useNotification.js";
+import type { ActivityEvent, EmployeeReport, HallData, PendingDecision } from "../types.js";
 
 type HallProps = {
   data: HallData;
@@ -26,8 +37,18 @@ const EVENT_LABELS: Record<string, string> = {
 };
 
 // 生成员工报告汇总 Markdown，按员工分组（纯函数，无副作用）
-function exportReportsMd(reports: EmployeeReport[], employees: HallData["employees"], days: number): string {
-  const now = new Date().toLocaleString("zh-CN", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" });
+function exportReportsMd(
+  reports: EmployeeReport[],
+  employees: HallData["employees"],
+  days: number,
+): string {
+  const now = new Date().toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
   const rangeLabel = days === 1 ? "今日" : `近 ${days} 天`;
   const lines: string[] = [`# 员工报告汇总（${rangeLabel}）`, ``, `导出时间：${now}`, ``];
 
@@ -47,7 +68,10 @@ function exportReportsMd(reports: EmployeeReport[], employees: HallData["employe
       lines.push(`## ${empName}`, ``);
       for (const r of empReports) {
         // SQLite UTC 时间补 Z 后再格式化
-        const utcStr = r.created_at.includes("T") || r.created_at.endsWith("Z") ? r.created_at : r.created_at.replace(" ", "T") + "Z";
+        const utcStr =
+          r.created_at.includes("T") || r.created_at.endsWith("Z")
+            ? r.created_at
+            : r.created_at.replace(" ", "T") + "Z";
         const dateLabel = new Date(utcStr).toLocaleString("zh-CN");
         lines.push(`### ${dateLabel}`, ``, r.content, ``);
       }
@@ -63,8 +87,10 @@ export function Hall({ data, onRefresh }: HallProps) {
   const [goalScope, setGoalScope] = useState<string>("");
   const scopedGoalId = goalScope ? Number(goalScope) : undefined;
   const activity = useActivity(4_000, scopedGoalId);
+  const [activeTab, setActiveTab] = useState<"activity" | "results">("activity");
   const [reportDays, setReportDays] = useState<1 | 7>(7);
   const [reportExportMd, setReportExportMd] = useState<string | null>(null);
+  const [focusedEmp, setFocusedEmp] = useState<HallData["employees"][0] | null>(null);
   // 追踪上一次的待决请求列表，用于检测新增项
   const prevPendingRef = useRef<PendingDecision[]>([]);
 
@@ -87,11 +113,22 @@ export function Hall({ data, onRefresh }: HallProps) {
     month: "long",
     day: "numeric",
   });
-  const scopedGoals = scopedGoalId === undefined ? data.goals : data.goals.filter((g) => g.id === scopedGoalId);
-  const scopedPending = scopedGoalId === undefined ? data.pending : data.pending.filter((p) => p.goal_id === scopedGoalId);
+  const scopedGoals =
+    scopedGoalId === undefined ? data.goals : data.goals.filter((g) => g.id === scopedGoalId);
+  const scopedPending =
+    scopedGoalId === undefined
+      ? data.pending
+      : data.pending.filter((p) => p.goal_id === scopedGoalId);
 
   if (scopedPending.length === 0 && activity.length === 0 && scopedGoals.length === 0) {
-    return <HallEmpty onGoalSet={async (title) => { await setGoal({ title }); onRefresh(); }} />;
+    return (
+      <HallEmpty
+        onGoalSet={async (title) => {
+          await setGoal({ title });
+          onRefresh();
+        }}
+      />
+    );
   }
 
   // Build per-employee task list from goals
@@ -113,9 +150,13 @@ export function Hall({ data, onRefresh }: HallProps) {
   const reportCountByEmployee: Record<string, number> = {};
   for (const event of activity) {
     if (event.event_type !== "report") continue;
-    const utcStr = event.created_at.includes("T") || event.created_at.endsWith("Z") ? event.created_at : event.created_at.replace(" ", "T") + "Z";
+    const utcStr =
+      event.created_at.includes("T") || event.created_at.endsWith("Z")
+        ? event.created_at
+        : event.created_at.replace(" ", "T") + "Z";
     if (new Date(utcStr).getTime() >= sevenDaysAgo) {
-      reportCountByEmployee[event.employee_id] = (reportCountByEmployee[event.employee_id] ?? 0) + 1;
+      reportCountByEmployee[event.employee_id] =
+        (reportCountByEmployee[event.employee_id] ?? 0) + 1;
     }
   }
 
@@ -166,7 +207,46 @@ export function Hall({ data, onRefresh }: HallProps) {
               </option>
             ))}
           </select>
-          <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>{today}</span>
+          <button
+            onClick={async () => {
+              const label = scopedGoalId !== undefined ? `目标 #${scopedGoalId}` : "全部";
+              if (
+                !confirm(
+                  `完全重置 ${label}？\n\n这将清除：\n• 所有待决事项\n• 所有决策记录\n• 活动日志\n• 员工汇报\n• 所有 AI 会话记忆\n\n此操作不可撤销。`,
+                )
+              )
+                return;
+              if (scopedGoalId !== undefined) {
+                // goal-scoped: only clear sessions for that goal
+                await clearAllSessions(scopedGoalId);
+              } else {
+                // full reset: clear DB transient data + all session files
+                await resetAll();
+              }
+              // Clear localStorage chat history
+              for (let i = localStorage.length - 1; i >= 0; i--) {
+                const k = localStorage.key(i);
+                if (k?.startsWith("chat:")) localStorage.removeItem(k);
+              }
+              onRefresh();
+            }}
+            title={`完全重置${scopedGoalId !== undefined ? ` 目标#${scopedGoalId}` : "全部数据"}`}
+            style={{
+              background: "none",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius-sm)",
+              color: "var(--text-muted)",
+              fontSize: "var(--text-xs)",
+              padding: "2px 10px",
+              cursor: "pointer",
+              whiteSpace: "nowrap",
+            }}
+          >
+            🗑 完全重置
+          </button>
+          <span style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>
+            {today}
+          </span>
         </div>
       </div>
 
@@ -206,49 +286,81 @@ export function Hall({ data, onRefresh }: HallProps) {
           minWidth: 0,
         }}
       >
-        {/* LEFT: Activity feed */}
+        {/* LEFT: Activity feed / Results board */}
         <section aria-label="员工动态" style={{ minWidth: 0 }}>
-          {/* 实时动态标题行 + 报告导出控件 */}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "var(--space-2)" }}>
-            <SectionLabel label="实时动态" />
-            <div style={{ display: "flex", alignItems: "center", gap: "var(--space-1)" }}>
-              <select
-                value={reportDays}
-                onChange={(e) => setReportDays(Number(e.target.value) as 1 | 7)}
-                style={{
-                  background: "var(--bg-base)",
-                  border: "1px solid var(--border)",
-                  borderRadius: "var(--radius-sm)",
-                  color: "var(--text-secondary)",
-                  fontSize: "var(--text-xs)",
-                  padding: "2px 4px",
-                  cursor: "pointer",
-                  outline: "none",
-                }}
-              >
-                <option value={1}>今日</option>
-                <option value={7}>近7天</option>
-              </select>
-              <button
-                onClick={() => {
-                  void fetchReports(reportDays, scopedGoalId).then((reports) => {
-                    setReportExportMd(exportReportsMd(reports, data.employees, reportDays));
-                  });
-                }}
-                style={{
-                  background: "none",
-                  border: "1px solid var(--border)",
-                  borderRadius: "var(--radius-sm)",
-                  color: "var(--text-secondary)",
-                  fontSize: "var(--text-xs)",
-                  padding: "2px 8px",
-                  cursor: "pointer",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                导出报告
-              </button>
+          {/* Tab header row */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              marginBottom: "var(--space-2)",
+            }}
+          >
+            {/* Tab buttons */}
+            <div style={{ display: "flex", gap: 2 }}>
+              {(["activity", "results"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  style={{
+                    background: activeTab === tab ? "var(--bg-card)" : "none",
+                    border: activeTab === tab ? "1px solid var(--border)" : "1px solid transparent",
+                    borderRadius: "var(--radius-sm)",
+                    color: activeTab === tab ? "var(--text-primary)" : "var(--text-muted)",
+                    fontSize: "var(--text-xs)",
+                    fontWeight: activeTab === tab ? 600 : 400,
+                    padding: "2px 10px",
+                    cursor: "pointer",
+                    letterSpacing: "0.04em",
+                    transition: "all var(--transition-fast)",
+                  }}
+                >
+                  {tab === "activity" ? "实时动态" : "成果看板"}
+                </button>
+              ))}
             </div>
+            {/* Report export controls — only shown in activity tab */}
+            {activeTab === "activity" && (
+              <div style={{ display: "flex", alignItems: "center", gap: "var(--space-1)" }}>
+                <select
+                  value={reportDays}
+                  onChange={(e) => setReportDays(Number(e.target.value) as 1 | 7)}
+                  style={{
+                    background: "var(--bg-base)",
+                    border: "1px solid var(--border)",
+                    borderRadius: "var(--radius-sm)",
+                    color: "var(--text-secondary)",
+                    fontSize: "var(--text-xs)",
+                    padding: "2px 4px",
+                    cursor: "pointer",
+                    outline: "none",
+                  }}
+                >
+                  <option value={1}>今日</option>
+                  <option value={7}>近7天</option>
+                </select>
+                <button
+                  onClick={() => {
+                    void fetchReports(reportDays, scopedGoalId).then((reports) => {
+                      setReportExportMd(exportReportsMd(reports, data.employees, reportDays));
+                    });
+                  }}
+                  style={{
+                    background: "none",
+                    border: "1px solid var(--border)",
+                    borderRadius: "var(--radius-sm)",
+                    color: "var(--text-secondary)",
+                    fontSize: "var(--text-xs)",
+                    padding: "2px 8px",
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  导出报告
+                </button>
+              </div>
+            )}
           </div>
 
           {/* 报告导出覆盖层 */}
@@ -260,17 +372,21 @@ export function Hall({ data, onRefresh }: HallProps) {
             />
           )}
 
-          <Card>
-            {activity.length === 0 ? (
-              <EmptyNote text="暂无员工动态，设置目标后员工会开始响应" />
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-                {activity.map((event) => (
-                  <ActivityRow key={event.id} event={event} employees={data.employees} />
-                ))}
-              </div>
-            )}
-          </Card>
+          {activeTab === "activity" ? (
+            <Card>
+              {activity.length === 0 ? (
+                <EmptyNote text="暂无员工动态，设置目标后员工会开始响应" />
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+                  {activity.map((event) => (
+                    <ActivityRow key={event.id} event={event} employees={data.employees} />
+                  ))}
+                </div>
+              )}
+            </Card>
+          ) : (
+            <ResultsBoard activity={activity} employees={data.employees} />
+          )}
         </section>
 
         {/* RIGHT: Goals + Employee status */}
@@ -292,7 +408,9 @@ export function Hall({ data, onRefresh }: HallProps) {
                   latestEvent={latestByEmployee[emp.id]}
                   reportCount={reportCountByEmployee[emp.id] ?? 0}
                   completion={completionRateByEmployee[emp.id]}
-                  onOpen={() => navigate(`/chat/${emp.id}`)}
+                  onOpen={() =>
+                    emp.id === "company-coo" ? navigate(`/chat/${emp.id}`) : setFocusedEmp(emp)
+                  }
                 />
               ))}
             </div>
@@ -300,7 +418,160 @@ export function Hall({ data, onRefresh }: HallProps) {
         </div>
       </div>
 
+      {focusedEmp && (
+        <EmployeeActivityModal
+          emp={focusedEmp}
+          activity={activity.filter((a) => a.employee_id === focusedEmp.id)}
+          onClose={() => setFocusedEmp(null)}
+        />
+      )}
     </main>
+  );
+}
+
+function EmployeeActivityModal({
+  emp,
+  activity,
+  onClose,
+}: {
+  emp: HallData["employees"][0];
+  activity: ActivityEvent[];
+  onClose: () => void;
+}) {
+  const EVENT_ICONS: Record<string, string> = {
+    task_assigned: "📋",
+    task_response: "💬",
+    report: "📊",
+    pending_decision: "⚡",
+    decision_received: "✅",
+  };
+  const EVENT_LABELS: Record<string, string> = {
+    task_assigned: "收到任务",
+    task_response: "任务响应",
+    report: "进展汇报",
+    pending_decision: "待决请求",
+    decision_received: "确认决策",
+  };
+  const recent = [...activity].reverse().slice(0, 20);
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.5)",
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "flex-end",
+        zIndex: 1000,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--bg-base)",
+          borderLeft: "1px solid var(--border)",
+          width: "min(420px, 90vw)",
+          height: "100vh",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+        }}
+      >
+        {/* Header */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "var(--space-3)",
+            padding: "var(--space-4)",
+            borderBottom: "1px solid var(--border)",
+            background: "var(--bg-sidebar)",
+            flexShrink: 0,
+          }}
+        >
+          <span style={{ fontSize: "20px" }}>{emp.emoji}</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: "var(--text-sm)", fontWeight: 600 }}>{emp.name}</div>
+            <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>{emp.role}</div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              background: "none",
+              border: "none",
+              color: "var(--text-muted)",
+              cursor: "pointer",
+              fontSize: "18px",
+              padding: 4,
+              lineHeight: 1,
+            }}
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Activity list */}
+        <div
+          style={{
+            flex: 1,
+            overflowY: "auto",
+            padding: "var(--space-4)",
+            display: "flex",
+            flexDirection: "column",
+            gap: "var(--space-3)",
+          }}
+        >
+          {recent.length === 0 ? (
+            <div
+              style={{
+                color: "var(--text-muted)",
+                fontSize: "var(--text-sm)",
+                textAlign: "center",
+                paddingTop: "var(--space-8)",
+              }}
+            >
+              暂无活动记录
+            </div>
+          ) : (
+            recent.map((event) => (
+              <div key={event.id} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center" }}>
+                  <span
+                    style={{
+                      background: "var(--bg-card)",
+                      border: "1px solid var(--border)",
+                      borderRadius: 4,
+                      padding: "1px 6px",
+                      fontSize: "10px",
+                      color: "var(--text-muted)",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {EVENT_ICONS[event.event_type] ?? "•"}{" "}
+                    {EVENT_LABELS[event.event_type] ?? event.event_type}
+                  </span>
+                  <span
+                    style={{
+                      marginLeft: "auto",
+                      fontSize: "var(--text-xs)",
+                      color: "var(--text-muted)",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {formatTimeAgo(event.created_at)}
+                  </span>
+                </div>
+                <Md compact style={{ fontSize: "var(--text-xs)", color: "var(--text-primary)" }}>
+                  {event.content}
+                </Md>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -353,28 +624,22 @@ function ActivityRow({
           >
             {icon} {label}
           </span>
-          <span style={{ marginLeft: "auto" }}>
-            {formatTimeAgo(event.created_at)}
-          </span>
+          <span style={{ marginLeft: "auto" }}>{formatTimeAgo(event.created_at)}</span>
         </div>
         <div
           style={{
             fontSize: "var(--text-sm)",
             color: "var(--text-primary)",
-            lineHeight: "var(--leading-normal)",
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
             ...(isLong && !expanded
               ? {
                   overflow: "hidden",
-                  display: "-webkit-box",
-                  WebkitLineClamp: 3,
-                  WebkitBoxOrient: "vertical",
+                  maxHeight: "4.8em",
+                  maskImage: "linear-gradient(to bottom, black 55%, transparent 100%)",
                 }
               : {}),
           }}
         >
-          {event.content}
+          <Md compact>{event.content}</Md>
         </div>
         {isLong && (
           <button
@@ -393,6 +658,142 @@ function ActivityRow({
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+function ResultsBoard({
+  activity,
+  employees,
+}: {
+  activity: ActivityEvent[];
+  employees: HallData["employees"];
+}) {
+  // expandedMap: empId -> whether all results are shown (default: show latest 1)
+  const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({});
+
+  // Show task_response events only, newest-first, grouped by employee
+  const responses = activity.filter((e) => e.event_type === "task_response");
+
+  if (responses.length === 0) {
+    return (
+      <Card>
+        <EmptyNote text="暂无任务成果，任务完成后成果会在这里汇总" />
+      </Card>
+    );
+  }
+
+  // Group by employee, preserving employee order from employees list
+  const byEmployee = new Map<string, ActivityEvent[]>();
+  for (const emp of employees) byEmployee.set(emp.id, []);
+  for (const event of responses) {
+    if (!byEmployee.has(event.employee_id)) byEmployee.set(event.employee_id, []);
+    byEmployee.get(event.employee_id)!.push(event);
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+      {[...byEmployee.entries()]
+        .filter(([, events]) => events.length > 0)
+        .map(([empId, events]) => {
+          const emp = employees.find((e) => e.id === empId);
+          const expanded = !!expandedMap[empId];
+          const shownEvents = expanded ? events : events.slice(0, 1);
+
+          return (
+            <div key={empId}>
+              {/* Employee header */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "var(--space-2)",
+                  marginBottom: "var(--space-2)",
+                }}
+              >
+                <span style={{ fontSize: "14px" }}>{emp?.emoji ?? "👤"}</span>
+                <span
+                  style={{
+                    fontSize: "var(--text-xs)",
+                    fontWeight: 600,
+                    color: emp?.accentColor ?? "var(--text-secondary)",
+                  }}
+                >
+                  {emp?.name ?? empId}
+                </span>
+                <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
+                  {emp?.role}
+                </span>
+                <span
+                  style={{
+                    fontSize: "var(--text-xs)",
+                    color: "var(--text-muted)",
+                    marginLeft: "auto",
+                  }}
+                >
+                  {events.length} 份成果
+                </span>
+              </div>
+
+              {shownEvents.map((event) => (
+                <div
+                  key={event.id}
+                  style={{
+                    background: "var(--bg-card)",
+                    border: "1px solid var(--border)",
+                    borderLeft: `3px solid ${emp?.accentColor ?? "var(--border)"}`,
+                    borderRadius: "var(--radius)",
+                    padding: "var(--space-4)",
+                    marginBottom: "var(--space-2)",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginBottom: "var(--space-2)",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: "var(--text-xs)",
+                        color: "var(--text-muted)",
+                        background: "var(--bg-base)",
+                        border: "1px solid var(--border)",
+                        borderRadius: 4,
+                        padding: "1px 6px",
+                      }}
+                    >
+                      💬 任务成果
+                    </span>
+                    <span style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)" }}>
+                      {formatTimeAgo(event.created_at)}
+                    </span>
+                  </div>
+                  <Md style={{ fontSize: "var(--text-sm)" }}>{event.content}</Md>
+                </div>
+              ))}
+
+              {events.length > 1 && (
+                <button
+                  onClick={() => setExpandedMap((m) => ({ ...m, [empId]: !m[empId] }))}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "var(--accent-agent)",
+                    fontSize: "var(--text-xs)",
+                    cursor: "pointer",
+                    padding: "2px 0",
+                    marginTop: 2,
+                  }}
+                >
+                  {expanded ? "收起历史成果" : `查看全部 ${events.length} 份成果`}
+                </button>
+              )}
+            </div>
+          );
+        })}
     </div>
   );
 }
@@ -421,27 +822,31 @@ function EmployeeStatusCard({
   const activeTasks = tasks.filter((t) => t.status !== "done");
   const done = tasks.filter((t) => t.status === "done").length;
   const inProgress = tasks.filter((t) => t.status === "in_progress").length;
-  const statusColor = tasks.length === 0
-    ? "var(--text-muted)"
-    : done === tasks.length
-    ? "var(--accent-done)"
-    : inProgress > 0
-    ? "var(--accent-urgent)"
-    : "var(--text-muted)";
-  const statusLabel = tasks.length === 0
-    ? "待分配"
-    : done === tasks.length
-    ? "全完成"
-    : inProgress > 0
-    ? `${inProgress} 进行中`
-    : `${tasks.length - done} 待开始`;
+  const statusColor =
+    tasks.length === 0
+      ? "var(--text-muted)"
+      : done === tasks.length
+        ? "var(--accent-done)"
+        : inProgress > 0
+          ? "var(--accent-urgent)"
+          : "var(--text-muted)";
+  const statusLabel =
+    tasks.length === 0
+      ? "待分配"
+      : done === tasks.length
+        ? "全完成"
+        : inProgress > 0
+          ? `${inProgress} 进行中`
+          : `${tasks.length - done} 待开始`;
 
   return (
     <div
       role="button"
       tabIndex={0}
       onClick={onOpen}
-      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onOpen(); }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") onOpen();
+      }}
       style={{
         background: "var(--bg-card)",
         border: "1px solid var(--border)",
@@ -451,44 +856,81 @@ function EmployeeStatusCard({
         cursor: "pointer",
         transition: "background var(--transition-fast)",
       }}
-      onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = "var(--bg-card-hover, var(--bg-base))"; }}
-      onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = "var(--bg-card)"; }}
+      onMouseEnter={(e) => {
+        (e.currentTarget as HTMLDivElement).style.background =
+          "var(--bg-card-hover, var(--bg-base))";
+      }}
+      onMouseLeave={(e) => {
+        (e.currentTarget as HTMLDivElement).style.background = "var(--bg-card)";
+      }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", marginBottom: latestEvent || activeTasks.length > 0 ? "var(--space-1)" : 0 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "var(--space-2)",
+          marginBottom: latestEvent || activeTasks.length > 0 ? "var(--space-1)" : 0,
+        }}
+      >
         <span style={{ fontSize: "14px" }}>{emp.emoji}</span>
-        <span style={{ fontSize: "var(--text-xs)", fontWeight: 600, color: "var(--text-primary)", flex: 1, minWidth: 0 }}>
+        <span
+          style={{
+            fontSize: "var(--text-xs)",
+            fontWeight: 600,
+            color: "var(--text-primary)",
+            flex: 1,
+            minWidth: 0,
+          }}
+        >
           {emp.name}
-          <span style={{ color: "var(--text-muted)", fontWeight: 400, marginLeft: 4 }}>{emp.role}</span>
+          <span style={{ color: "var(--text-muted)", fontWeight: 400, marginLeft: 4 }}>
+            {emp.role}
+          </span>
         </span>
-        <span style={{ fontSize: "10px", color: statusColor, border: `1px solid ${statusColor}`, borderRadius: 8, padding: "1px 6px", whiteSpace: "nowrap", fontWeight: 600, flexShrink: 0 }}>
+        <span
+          style={{
+            fontSize: "10px",
+            color: statusColor,
+            border: `1px solid ${statusColor}`,
+            borderRadius: 8,
+            padding: "1px 6px",
+            whiteSpace: "nowrap",
+            fontWeight: 600,
+            flexShrink: 0,
+          }}
+        >
           {statusLabel}
         </span>
       </div>
 
       {/* Latest activity snippet */}
       {latestEvent && (
-        <div style={{
-          fontSize: "var(--text-xs)",
-          color: "var(--text-muted)",
-          display: "-webkit-box",
-          WebkitLineClamp: 2,
-          WebkitBoxOrient: "vertical",
-          overflow: "hidden",
-          lineHeight: "1.4",
-          marginBottom: activeTasks.length > 0 ? "var(--space-1)" : 0,
-          wordBreak: "break-word",
-        }}>
+        <div
+          style={{
+            fontSize: "var(--text-xs)",
+            color: "var(--text-muted)",
+            display: "-webkit-box",
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: "vertical",
+            overflow: "hidden",
+            lineHeight: "1.4",
+            marginBottom: activeTasks.length > 0 ? "var(--space-1)" : 0,
+            wordBreak: "break-word",
+          }}
+        >
           {latestEvent.content}
         </div>
       )}
 
       {/* 活跃度指标：7天汇报次数 + 任务完成率（始终显示，无数据时也展示基准值） */}
-      <div style={{
-        fontSize: "var(--text-xs)",
-        color: "var(--text-muted)",
-        marginTop: "var(--space-1)",
-        marginBottom: activeTasks.length > 0 ? "var(--space-1)" : 0,
-      }}>
+      <div
+        style={{
+          fontSize: "var(--text-xs)",
+          color: "var(--text-muted)",
+          marginTop: "var(--space-1)",
+          marginBottom: activeTasks.length > 0 ? "var(--space-1)" : 0,
+        }}
+      >
         {"📊 7天 "}
         {reportCount}
         {"报"}
@@ -505,13 +947,33 @@ function EmployeeStatusCard({
       {activeTasks.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 2 }}>
           {activeTasks.slice(0, 2).map((t) => (
-            <div key={t.id} style={{ display: "flex", alignItems: "flex-start", gap: 4, fontSize: "10px", color: "var(--text-secondary)" }}>
-              <span style={{ width: 5, height: 5, borderRadius: "50%", background: TASK_STATUS_DOT[t.status], flexShrink: 0, marginTop: 3 }} />
+            <div
+              key={t.id}
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 4,
+                fontSize: "10px",
+                color: "var(--text-secondary)",
+              }}
+            >
+              <span
+                style={{
+                  width: 5,
+                  height: 5,
+                  borderRadius: "50%",
+                  background: TASK_STATUS_DOT[t.status],
+                  flexShrink: 0,
+                  marginTop: 3,
+                }}
+              />
               <span style={{ lineHeight: "1.4", wordBreak: "break-word" }}>{t.title}</span>
             </div>
           ))}
           {activeTasks.length > 2 && (
-            <div style={{ fontSize: "10px", color: "var(--text-muted)" }}>+{activeTasks.length - 2} 项</div>
+            <div style={{ fontSize: "10px", color: "var(--text-muted)" }}>
+              +{activeTasks.length - 2} 项
+            </div>
           )}
         </div>
       )}
@@ -519,7 +981,11 @@ function EmployeeStatusCard({
   );
 }
 
-const TASK_STATUS_LABEL: Record<string, string> = { pending: "待开始", in_progress: "进行中", done: "完成" };
+const TASK_STATUS_LABEL: Record<string, string> = {
+  pending: "待开始",
+  in_progress: "进行中",
+  done: "完成",
+};
 
 const PRESET_GOALS = [
   "完成 MVP 并公开上线",
@@ -530,13 +996,7 @@ const PRESET_GOALS = [
   "用户留存率提升至 60%",
 ];
 
-function GoalsPanel({
-  goals,
-  onRefresh,
-}: {
-  goals: HallData["goals"];
-  onRefresh: () => void;
-}) {
+function GoalsPanel({ goals, onRefresh }: { goals: HallData["goals"]; onRefresh: () => void }) {
   const allGoals = goals;
   const [adding, setAdding] = useState(false);
   const [newTitle, setNewTitle] = useState("");
@@ -557,7 +1017,14 @@ function GoalsPanel({
 
   return (
     <>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "var(--space-2)" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: "var(--space-2)",
+        }}
+      >
         <SectionLabel label="季度目标" />
         <button
           onClick={() => setAdding((v) => !v)}
@@ -583,11 +1050,21 @@ function GoalsPanel({
                 placeholder="目标标题..."
                 value={newTitle}
                 onChange={(e) => setNewTitle(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") void handleAdd(); if (e.key === "Escape") { setAdding(false); setNewTitle(""); } }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void handleAdd();
+                  if (e.key === "Escape") {
+                    setAdding(false);
+                    setNewTitle("");
+                  }
+                }}
                 autoFocus
                 style={{ ...inputStyle, flex: 1 }}
               />
-              <button onClick={() => void handleAdd()} disabled={!newTitle.trim() || saving} style={smallBtnStyle("var(--accent-agent)")}>
+              <button
+                onClick={() => void handleAdd()}
+                disabled={!newTitle.trim() || saving}
+                style={smallBtnStyle("var(--accent-agent)")}
+              >
                 保存
               </button>
             </div>
@@ -631,9 +1108,21 @@ const TASK_STATUS_CYCLE: Record<string, "pending" | "in_progress" | "done"> = {
 };
 const TASK_STATUS_ICON: Record<string, string> = { pending: "⬜", in_progress: "🔄", done: "✅" };
 const PRIORITY_ICON: Record<string, string> = { high: "🔴", normal: "🟡", low: "🔵" };
-const PRIORITY_CYCLE: Record<string, "low" | "normal" | "high"> = { high: "normal", normal: "low", low: "high" };
+const PRIORITY_CYCLE: Record<string, "low" | "normal" | "high"> = {
+  high: "normal",
+  normal: "low",
+  low: "high",
+};
 
-function GoalRow({ goal, allGoals, onRefresh }: { goal: HallData["goals"][0]; allGoals: HallData["goals"]; onRefresh: () => void }) {
+function GoalRow({
+  goal,
+  allGoals,
+  onRefresh,
+}: {
+  goal: HallData["goals"][0];
+  allGoals: HallData["goals"];
+  onRefresh: () => void;
+}) {
   const [editing, setEditing] = useState(false);
   const [expanded, setExpanded] = useState(true);
   const [title, setTitle] = useState(goal.title);
@@ -688,23 +1177,56 @@ function GoalRow({ goal, allGoals, onRefresh }: { goal: HallData["goals"][0]; al
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") void handleSave();
-              if (e.key === "Escape") { setEditing(false); setTitle(goal.title); }
+              if (e.key === "Escape") {
+                setEditing(false);
+                setTitle(goal.title);
+              }
             }}
             autoFocus
             style={{ ...inputStyle, flex: 1 }}
           />
-          <button onClick={() => void handleSave()} disabled={saving} style={smallBtnStyle("var(--accent-agent)")}>✓</button>
-          <button onClick={() => { setEditing(false); setTitle(goal.title); }} style={smallBtnStyle("var(--border)")}>✕</button>
+          <button
+            onClick={() => void handleSave()}
+            disabled={saving}
+            style={smallBtnStyle("var(--accent-agent)")}
+          >
+            ✓
+          </button>
+          <button
+            onClick={() => {
+              setEditing(false);
+              setTitle(goal.title);
+            }}
+            style={smallBtnStyle("var(--border)")}
+          >
+            ✕
+          </button>
         </div>
       ) : (
         <>
           <div style={{ display: "flex", alignItems: "flex-start", gap: "var(--space-2)" }}>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: "var(--text-sm)", fontWeight: 600, marginBottom: 2, display: "flex", alignItems: "center", gap: 4 }}>
+              <div
+                style={{
+                  fontSize: "var(--text-sm)",
+                  fontWeight: 600,
+                  marginBottom: 2,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                }}
+              >
                 {goal.tasks.length > 0 && (
                   <button
                     onClick={() => setExpanded((v) => !v)}
-                    style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: "10px", color: "var(--text-muted)" }}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      padding: 0,
+                      fontSize: "10px",
+                      color: "var(--text-muted)",
+                    }}
                   >
                     {expanded ? "▾" : "▸"}
                   </button>
@@ -712,26 +1234,63 @@ function GoalRow({ goal, allGoals, onRefresh }: { goal: HallData["goals"][0]; al
                 {goal.title}
               </div>
               {goal.quarter && (
-                <div style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)", marginBottom: 3 }}>{goal.quarter}</div>
+                <div
+                  style={{
+                    fontSize: "var(--text-xs)",
+                    color: "var(--text-secondary)",
+                    marginBottom: 3,
+                  }}
+                >
+                  {goal.quarter}
+                </div>
               )}
               {goal.tasks.length > 0 && (
                 <div>
-                  <div style={{ height: 3, background: "var(--border)", borderRadius: 2, overflow: "hidden" }}>
-                    <div style={{ height: "100%", width: `${pct}%`, background: "var(--accent-done)", transition: "width 400ms ease" }} />
+                  <div
+                    style={{
+                      height: 3,
+                      background: "var(--border)",
+                      borderRadius: 2,
+                      overflow: "hidden",
+                    }}
+                  >
+                    <div
+                      style={{
+                        height: "100%",
+                        width: `${pct}%`,
+                        background: "var(--accent-done)",
+                        transition: "width 400ms ease",
+                      }}
+                    />
                   </div>
-                  <div style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", marginTop: 2 }}>{done}/{goal.tasks.length} 完成</div>
+                  <div
+                    style={{ fontSize: "var(--text-xs)", color: "var(--text-muted)", marginTop: 2 }}
+                  >
+                    {done}/{goal.tasks.length} 完成
+                  </div>
                 </div>
               )}
             </div>
             <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-              <button onClick={() => setEditing(true)} style={iconBtnStyle} title="编辑">✏️</button>
-              <button onClick={() => void handleDelete()} style={iconBtnStyle} title="删除">🗑️</button>
+              <button onClick={() => setEditing(true)} style={iconBtnStyle} title="编辑">
+                ✏️
+              </button>
+              <button onClick={() => void handleDelete()} style={iconBtnStyle} title="删除">
+                🗑️
+              </button>
             </div>
           </div>
 
           {/* Task list */}
           {expanded && goal.tasks.length > 0 && (
-            <div style={{ marginTop: "var(--space-2)", display: "flex", flexDirection: "column", gap: 4 }}>
+            <div
+              style={{
+                marginTop: "var(--space-2)",
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+              }}
+            >
               {goal.tasks.map((t) => (
                 <div
                   key={t.id}
@@ -741,20 +1300,29 @@ function GoalRow({ goal, allGoals, onRefresh }: { goal: HallData["goals"][0]; al
                   <button
                     onClick={() => void handleTaskClick(t.id, t.status)}
                     title={`点击切换到：${TASK_STATUS_LABEL[TASK_STATUS_CYCLE[t.status] ?? "pending"]}`}
-                    style={{ background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: "12px", flexShrink: 0 }}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      padding: 0,
+                      fontSize: "12px",
+                      flexShrink: 0,
+                    }}
                   >
                     {TASK_STATUS_ICON[t.status] ?? "⬜"}
                   </button>
 
                   {/* 任务标题 + 员工 + 额外目标徽章 */}
-                  <span style={{
-                    flex: 1,
-                    color: t.status === "done" ? "var(--text-muted)" : "var(--text-secondary)",
-                    textDecoration: t.status === "done" ? "line-through" : "none",
-                    lineHeight: "1.4",
-                    wordBreak: "break-word",
-                    fontSize: "var(--text-xs)",
-                  }}>
+                  <span
+                    style={{
+                      flex: 1,
+                      color: t.status === "done" ? "var(--text-muted)" : "var(--text-secondary)",
+                      textDecoration: t.status === "done" ? "line-through" : "none",
+                      lineHeight: "1.4",
+                      wordBreak: "break-word",
+                      fontSize: "var(--text-xs)",
+                    }}
+                  >
                     {t.title}
                     <span style={{ color: "var(--text-muted)", marginLeft: 4 }}>
                       · {t.employee_id.replace("company-", "")}
@@ -762,7 +1330,11 @@ function GoalRow({ goal, allGoals, onRefresh }: { goal: HallData["goals"][0]; al
                     {(() => {
                       if (!t.extra_goal_ids) return null;
                       let ids: number[] = [];
-                      try { ids = JSON.parse(t.extra_goal_ids) as number[]; } catch { return null; }
+                      try {
+                        ids = JSON.parse(t.extra_goal_ids) as number[];
+                      } catch {
+                        return null;
+                      }
                       return ids.map((gid) => {
                         const g = allGoals.find((ag) => ag.id === gid);
                         if (!g) return null;
@@ -791,7 +1363,15 @@ function GoalRow({ goal, allGoals, onRefresh }: { goal: HallData["goals"][0]; al
                   <button
                     onClick={() => void handlePriorityClick(t.id, t.priority ?? "normal")}
                     title={`优先级：${t.priority ?? "normal"}，点击切换`}
-                    style={{ background: "none", border: "none", cursor: "pointer", padding: "0 2px", fontSize: "10px", flexShrink: 0, lineHeight: 1 }}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      padding: "0 2px",
+                      fontSize: "10px",
+                      flexShrink: 0,
+                      lineHeight: 1,
+                    }}
                   >
                     {PRIORITY_ICON[t.priority ?? "normal"]}
                   </button>
@@ -888,7 +1468,13 @@ function DecisionCard({
         </span>
       </div>
 
-      <p style={{ fontSize: "var(--text-sm)", color: "var(--text-primary)", lineHeight: "var(--leading-normal)" }}>
+      <p
+        style={{
+          fontSize: "var(--text-sm)",
+          color: "var(--text-primary)",
+          lineHeight: "var(--leading-normal)",
+        }}
+      >
         {pending.background}
       </p>
 
@@ -897,7 +1483,9 @@ function DecisionCard({
           try {
             const o = JSON.parse(pending.options ?? "") as unknown;
             return Array.isArray(o) && (o as unknown[]).length >= 2 ? (o as string[]) : null;
-          } catch { return null; }
+          } catch {
+            return null;
+          }
         })();
         return (
           <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
@@ -950,7 +1538,11 @@ function DecisionCard({
           aria-label="自定义指令"
         />
         {custom.trim() && (
-          <button onClick={() => void handleDecide("custom", custom.trim())} disabled={submitting} style={choiceButtonStyle("var(--accent-agent)")}>
+          <button
+            onClick={() => void handleDecide("custom", custom.trim())}
+            disabled={submitting}
+            style={choiceButtonStyle("var(--accent-agent)")}
+          >
             发送
           </button>
         )}
@@ -978,7 +1570,9 @@ function HallEmpty({ onGoalSet }: { onGoalSet: (title: string) => Promise<void> 
     >
       <div style={{ fontSize: 48 }}>🏢</div>
       <div style={{ textAlign: "center" }}>
-        <h1 style={{ fontSize: "var(--text-2xl)", fontWeight: 700, marginBottom: "var(--space-2)" }}>
+        <h1
+          style={{ fontSize: "var(--text-2xl)", fontWeight: 700, marginBottom: "var(--space-2)" }}
+        >
           欢迎，CEO
         </h1>
         <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>
@@ -1016,7 +1610,14 @@ function HallEmpty({ onGoalSet }: { onGoalSet: (title: string) => Promise<void> 
             {saving ? "设置中…" : "设置目标"}
           </button>
         </div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-1)", justifyContent: "center" }}>
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: "var(--space-1)",
+            justifyContent: "center",
+          }}
+        >
           {PRESET_GOALS.map((p) => (
             <button
               key={p}
@@ -1124,7 +1725,14 @@ function Card({ children }: { children: React.ReactNode }) {
 
 function EmptyNote({ text }: { text: string }) {
   return (
-    <p style={{ fontSize: "var(--text-sm)", color: "var(--text-muted)", textAlign: "center", padding: "var(--space-4) 0" }}>
+    <p
+      style={{
+        fontSize: "var(--text-sm)",
+        color: "var(--text-muted)",
+        textAlign: "center",
+        padding: "var(--space-4) 0",
+      }}
+    >
       {text}
     </p>
   );
@@ -1132,7 +1740,8 @@ function EmptyNote({ text }: { text: string }) {
 
 function formatTimeAgo(dateStr: string): string {
   // SQLite datetime('now') stores UTC without timezone suffix; append Z so JS parses correctly
-  const utcStr = dateStr.includes("T") || dateStr.endsWith("Z") ? dateStr : dateStr.replace(" ", "T") + "Z";
+  const utcStr =
+    dateStr.includes("T") || dateStr.endsWith("Z") ? dateStr : dateStr.replace(" ", "T") + "Z";
   const diff = Date.now() - new Date(utcStr).getTime();
   const mins = Math.floor(diff / 60_000);
   if (mins < 1) return "刚刚";
@@ -1142,7 +1751,15 @@ function formatTimeAgo(dateStr: string): string {
   return new Date(utcStr).toLocaleDateString("zh-CN");
 }
 
-function ReportExportOverlay({ markdown, days, onClose }: { markdown: string; days: number; onClose: () => void }) {
+function ReportExportOverlay({
+  markdown,
+  days,
+  onClose,
+}: {
+  markdown: string;
+  days: number;
+  onClose: () => void;
+}) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
@@ -1194,7 +1811,9 @@ function ReportExportOverlay({ markdown, days, onClose }: { markdown: string; da
           <span style={{ fontSize: "var(--text-sm)", fontWeight: 600 }}>
             员工报告导出（{days === 1 ? "今日" : `近 ${days} 天`}）
           </span>
-          <button onClick={onClose} style={{ ...iconBtnStyle, fontSize: "16px" }}>✕</button>
+          <button onClick={onClose} style={{ ...iconBtnStyle, fontSize: "16px" }}>
+            ✕
+          </button>
         </div>
         <textarea
           readOnly
